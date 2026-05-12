@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ploom BLE WebBluetooth Test</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f5f5f5; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        pre { background: #333; color: #fff; padding: 10px; border-radius: 5px; height: 400px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <h1>Ploom BLE Test (Web Bluetooth)</h1>
+    <p>ChromeやEdgeで開き、「接続テスト開始」ボタンを押してください。<br>
+    ※Windowsでペアリング済みのデバイスもOSのダイアログから選択可能です。</p>
+    
+    <button id="connectBtn">接続テスト開始</button>
+    <button id="disconnectBtn" disabled>切断</button>
+    
+    <div style="margin-top: 15px; padding: 10px; background: #e0e0e0; border-radius: 5px;">
+        <strong>テストコマンド送信:</strong><br>
+        <button id="cmdInit" disabled>Init Sequence [2, 227, 0]</button>
+        <button id="cmdVersion" disabled>Get Version [2, 224, 0]</button>
+        <button id="cmdMaster" disabled>Get Master Correction [2, 165, 0]</button>
+    </div>
+
+    <h3>ログ出力</h3>
+    <pre id="log"></pre>
+
+    <script>
+        const MAIN_SERVICE_UUID = '53654010-a391-4a65-83fa-bc58084aca28';
+        const WRITE_CHAR_UUID   = '53654011-a391-4a65-83fa-bc58084aca28';
+        const NOTIFY_CHAR_UUID  = '53654012-a391-4a65-83fa-bc58084aca28';
+
+        let bleDevice = null;
+        let writeChar = null;
+        let notifyChar = null;
+
+        function log(msg) {
+            const el = document.getElementById('log');
+            el.textContent += msg + '\n';
+            el.scrollTop = el.scrollHeight;
+        }
+
+        async function sendCommand(cmdArray, name) {
+            if (!writeChar) return;
+            const cmd = new Uint8Array(cmdArray);
+            log(`\n[TX] ${name} (${cmd.join(', ')}) を送信します...`);
+            try {
+                await writeChar.writeValue(cmd);
+                log('送信完了。');
+            } catch (e) {
+                log('送信エラー: ' + e);
+            }
+        }
+
+        document.getElementById('cmdInit').addEventListener('click', () => sendCommand([2, 227, 0], 'InitSequence'));
+        document.getElementById('cmdVersion').addEventListener('click', () => sendCommand([2, 224, 0], 'Get Version'));
+        document.getElementById('cmdMaster').addEventListener('click', () => sendCommand([2, 165, 0], 'Get Master Correction'));
+
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            try {
+                log('デバイスを検索しています...');
+                // Ploomデバイスのフィルタリング
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [
+                        { namePrefix: 'Ploom' }
+                    ],
+                    optionalServices: [MAIN_SERVICE_UUID]
+                });
+
+                log('デバイスを選択しました: ' + bleDevice.name);
+                
+                bleDevice.addEventListener('gattserverdisconnected', () => {
+                    log('デバイスから切断されました');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                });
+
+                log('GATTサーバーに接続しています...');
+                const server = await bleDevice.gatt.connect();
+
+                log('Main Serviceを取得しています...');
+                const service = await server.getPrimaryService(MAIN_SERVICE_UUID);
+
+                log('Characteristicsを一括取得しています...');
+                const characteristics = await service.getCharacteristics();
+                
+                for (const char of characteristics) {
+                    if (char.uuid === WRITE_CHAR_UUID) writeChar = char;
+                    if (char.uuid === NOTIFY_CHAR_UUID) notifyChar = char;
+                }
+
+                if (!writeChar || !notifyChar) {
+                    throw new Error('必要なCharacteristicが見つかりません');
+                }
+
+                log(`[Prop] NotifyChar - notify: ${notifyChar.properties.notify}, indicate: ${notifyChar.properties.indicate}`);
+                log(`[Prop] WriteChar  - write: ${writeChar.properties.write}, writeWithoutResponse: ${writeChar.properties.writeWithoutResponse}`);
+
+                notifyChar.addEventListener('characteristicvaluechanged', handleNotify);
+
+                try {
+                    log('Notifyの購読を開始します...');
+                    await notifyChar.startNotifications();
+                    log('Notifyの購読に成功しました。');
+                } catch (e) {
+                    log('Notify購読エラー: ' + e);
+                    log('※購読に失敗しましたが、テストのためコマンド送信を強行します...');
+                }
+
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('cmdInit').disabled = false;
+                document.getElementById('cmdVersion').disabled = false;
+                document.getElementById('cmdMaster').disabled = false;
+
+                // 最初のInitSequenceは自動で送らない（手動で押してもらう）
+                log('準備完了。上のボタンからコマンドを送信してテストしてください。');
+
+            } catch (error) {
+                log('エラー: ' + error);
+            }
+        });
+
+        document.getElementById('disconnectBtn').addEventListener('click', () => {
+            if (bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+            }
+        });
+
+        function handleNotify(event) {
+            const value = event.target.value;
+            const data = new Uint8Array(value.buffer);
+            if (data.length === 0) return;
+
+            // 受信したデータを全てHex文字列に変換
+            const hexString = Array.from(data)
+                .map(b => b.toString(16).padStart(2, '0').toUpperCase())
+                .join(' ');
+
+            // ログから推測すると、先頭バイトは「データ長」の可能性があります。
+            // 2バイト目が本当のオペコード(Opcode)かもしれないため、両方確認します。
+            const lenByte = data[0];
+            const opcode = data.length > 1 ? data[1] : null;
+            
+            if (opcode !== null) {
+                const hexOpcode = '0x' + opcode.toString(16).toUpperCase().padStart(2, '0');
+                let opName = "Unknown";
+                
+                switch (opcode) {
+                    case 0x18: opName = "Device Status"; break;
+                    case 0x30: opName = "Connection Response"; break;
+                    case 0x33: opName = "Battery Degradation"; break;
+                    case 0x44: opName = "Master Correction 1"; break;
+                    case 0x45: opName = "Master Correction 2"; break;
+                    case 0x46: opName = "Master Correction 3"; break;
+                    case 0x47: 
+                        opName = "Version/Variation"; 
+                        // バージョン情報なら文字列化を試みる (3バイト目以降)
+                        try {
+                            const version = new TextDecoder('utf-8').decode(data.slice(2));
+                            opName += ` (${version})`;
+                        } catch(e){}
+                        break;
+                }
+                
+                log(`[RX] ${opName} (Opcode:${hexOpcode}) | Raw: [ ${hexString} ]`);
+            } else {
+                log(`[RX] Short Packet | Raw: [ ${hexString} ]`);
+            }
+        }
+    </script>
+</body>
+</html>
