@@ -104,6 +104,22 @@ body {
   background: rgba(255, 255, 255, 0.15);
 }
 
+.btn.danger {
+  background: rgba(239, 68, 68, 0.8);
+  color: white;
+}
+
+.btn.danger:hover {
+  background: var(--danger);
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.5);
+}
+
+.btn.danger:disabled {
+  background: var(--text-muted);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
 .tabs {
   display: flex;
   gap: 10px;

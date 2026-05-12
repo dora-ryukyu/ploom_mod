@@ -1,4 +1,4 @@
-import { MAIN_SERVICE_UUID, WRITE_CHAR_UUID, NOTIFY_CHAR_UUID, decodeJson, encodeJson } from './protocol.js';
+import { MAIN_SERVICE_UUID, WRITE_CHAR_UUID, NOTIFY_CHAR_UUID, decodeJson, encodeJson, buildProfileCmds } from './protocol.js';
 
 // ---- UI Elements ----
 const els = {
@@ -13,6 +13,8 @@ const els = {
   logOutput: document.getElementById('log-output'),
   fileUpload: document.getElementById('file-upload'),
   btnExport: document.getElementById('btn-export'),
+  btnApply: document.getElementById('btn-apply'),
+  btnReset: document.getElementById('btn-reset'),
   stepsContainer: document.getElementById('steps-container'),
   heatingChart: document.getElementById('heating-chart')
 };
@@ -24,6 +26,7 @@ let notifyChar = null;
 let masterProfile = [];
 let currentProfileRaw = null;
 let decodedProfile = null;
+let deviceState = { autoStart: false, locked: false };
 
 // ---- Tab Switching ----
 els.tabs.forEach(tab => {
@@ -114,6 +117,7 @@ els.fileUpload.addEventListener('change', (e) => {
       renderStepsEditor();
       updateChart();
       log(`Loaded profile: ${file.name}`);
+      els.btnApply.disabled = false;
       // Switch to profile tab
       els.tabs[1].click();
     } catch (err) {
@@ -140,6 +144,104 @@ els.btnExport.addEventListener('click', () => {
   log('Profile exported successfully.');
 });
 
+els.btnApply.addEventListener('click', async () => {
+  if (!writeChar) {
+    alert("デバイスに接続してください。");
+    return;
+  }
+  
+  if (!decodedProfile) {
+    alert("適用するプロファイルをロードしてください。");
+    return;
+  }
+
+  if (!confirm("現在のプロファイルをデバイスに焼き込みます。よろしいですか？")) return;
+
+  try {
+    log("Building commands...");
+    const masterCorrection = masterProfile && masterProfile.length === 20 ? masterProfile : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const cmds = buildProfileCmds(decodedProfile, masterCorrection);
+    
+    log(`Sending ${cmds.length} commands to device...`);
+    
+    // Disable UI during write
+    els.btnApply.disabled = true;
+    for (let i = 0; i < cmds.length; i++) {
+      const cmd = cmds[i];
+      await sendCommand(cmd);
+      // Wait to ensure processing
+      await new Promise(r => setTimeout(r, 50));
+    }
+    
+    log("Successfully Applied to Device!");
+    alert("焼き込みが完了しました！");
+  } catch (err) {
+    log("Apply to Device Failed: " + err);
+  } finally {
+    els.btnApply.disabled = false;
+  }
+});
+
+// Additional control buttons dynamically generated
+document.addEventListener('DOMContentLoaded', () => {
+  const actionsDiv = document.querySelector('.actions');
+  
+  const additionalControls = document.createElement('div');
+  additionalControls.className = 'controls';
+  additionalControls.style.marginTop = '10px';
+  additionalControls.innerHTML = `
+    <button id="btnToggleAutoStart" class="btn secondary" disabled>自動加熱 (Auto Start)</button>
+    <button id="btnToggleVibe" class="btn secondary" disabled>バイブテスト</button>
+  `;
+  actionsDiv.appendChild(additionalControls);
+
+  const btnToggleAutoStart = document.getElementById('btnToggleAutoStart');
+  const btnToggleVibe = document.getElementById('btnToggleVibe');
+  
+  els.btnToggleAutoStart = btnToggleAutoStart;
+  els.btnToggleVibe = btnToggleVibe;
+
+  btnToggleAutoStart.addEventListener('click', async () => {
+    if (!writeChar) return;
+    try {
+      const newState = !deviceState.autoStart;
+      await sendCommand([2, 202, newState ? 1 : 0]);
+      deviceState.autoStart = newState;
+      btnToggleAutoStart.innerText = \`自動加熱 (Auto Start): \${newState ? 'ON' : 'OFF'}\`;
+      log("Auto Start toggled: " + newState);
+    } catch (err) {
+      log("Toggle failed: " + err);
+    }
+  });
+
+  btnToggleVibe.addEventListener('click', async () => {
+    if (!writeChar) return;
+    try {
+      await sendCommand([2, 121, 1]);
+      log("Vibration requested.");
+    } catch (err) {
+      log("Vibration request failed: " + err);
+    }
+  });
+});
+
+els.btnReset.addEventListener('click', async () => {
+  if (!writeChar) {
+    alert("デバイスに接続してください。");
+    return;
+  }
+  
+  if (!confirm("初期（ベーシック）モードにリセットしますか？")) return;
+  
+  try {
+    log("Resetting to Basic Profile...");
+    await sendCommand([2, 166, 0]);
+    log("Reset complete.");
+    setTimeout(() => sendCommand([2, 227, 0]), 1000);
+  } catch (err) {
+    log("Reset failed: " + err);
+  }
+});
 
 // ---- BLE Logic ----
 async function sendCommand(cmdArray) {
@@ -234,6 +336,7 @@ els.btnConnect.addEventListener('click', async () => {
             log('Disconnected');
             els.btnConnect.textContent = 'Connect Device';
             els.btnConnect.disabled = false;
+            els.btnReset.disabled = true;
             els.valModel.textContent = '---';
         });
 
@@ -257,6 +360,7 @@ els.btnConnect.addEventListener('click', async () => {
 
         els.btnConnect.textContent = 'Connected';
         els.btnConnect.classList.replace('primary', 'secondary');
+        els.btnReset.disabled = false;
 
         // Init Sequence to trigger the cascade of fetching data
         await sendCommand([2, 227, 0]);
