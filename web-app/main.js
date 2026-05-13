@@ -207,7 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const newState = !deviceState.autoStart;
       await sendCommand([2, 202, newState ? 1 : 0]);
       deviceState.autoStart = newState;
-      btnToggleAutoStart.innerText = \`自動加熱 (Auto Start): \${newState ? 'ON' : 'OFF'}\`;
+      btnToggleAutoStart.innerText = `自動加熱 (Auto Start): ${newState ? 'ON' : 'OFF'}`;
       log("Auto Start toggled: " + newState);
     } catch (err) {
       log("Toggle failed: " + err);
