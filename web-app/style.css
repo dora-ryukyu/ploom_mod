@@ -120,6 +120,127 @@ body {
   cursor: not-allowed;
 }
 
+.btn.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.header-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  width: fit-content;
+  letter-spacing: 0.02em;
+}
+
+.badge-off {
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--text-muted);
+}
+
+.badge-on {
+  background: rgba(16, 185, 129, 0.25);
+  color: #34d399;
+}
+
+.banner-safe {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #bfdbfe;
+  padding: 10px 14px;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card-head h2 {
+  margin-bottom: 0;
+}
+
+.log-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.controls-row.wrap {
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.controls-row.tight {
+  display: flex;
+  align-items: center;
+}
+
+.inline-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.select,
+select {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.check-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.check-row input {
+  margin-top: 3px;
+}
+
+.dryrun {
+  background: #000;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  color: #93c5fd;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
 .tabs {
   display: flex;
   gap: 10px;
@@ -219,10 +340,12 @@ body {
   background: #000;
   padding: 16px;
   border-radius: 8px;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   color: #34d399;
-  height: 200px;
+  height: 280px;
   overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -364,4 +487,6 @@ body {
 @media (max-width: 600px) {
   .step-inputs { flex-direction: column; gap: 8px; }
   .header-card { flex-direction: column; gap: 16px; align-items: flex-start; }
+  .app-header { flex-wrap: wrap; gap: 12px; }
+  .logs-card pre { height: 220px; }
 }

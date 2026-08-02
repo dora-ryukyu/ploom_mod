@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b0f19" />
   <title>Ploom Studio</title>
   <link rel="stylesheet" href="./style.css" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
@@ -10,16 +11,24 @@
 <body>
   <div class="app-container">
     <header class="app-header">
-      <h1>Ploom Studio</h1>
-      <button id="btn-connect" class="btn primary">Connect Device</button>
+      <div class="header-titles">
+        <h1>Ploom Studio</h1>
+        <span id="conn-badge" class="badge badge-off">Disconnected</span>
+      </div>
+      <button id="btn-connect" class="btn primary">Connect</button>
     </header>
 
-    <div class="tabs">
-      <button class="tab active" data-target="panel-device">Device Monitor</button>
-      <button class="tab" data-target="panel-profile">Profile Editor</button>
+    <div class="banner-safe" id="banner-safe">
+      <strong>Read-first mode</strong>
+      — 書き込みはデフォルト無効。Android ではまず Connect → Master 取得 → ログ Copy まで。
     </div>
 
-    <!-- Device Monitor Panel -->
+    <div class="tabs">
+      <button class="tab active" data-target="panel-device">Device</button>
+      <button class="tab" data-target="panel-profile">Profile</button>
+    </div>
+
+    <!-- Device Monitor -->
     <div id="panel-device" class="panel active">
       <div class="card status-card">
         <h2>Device Status</h2>
@@ -29,47 +38,87 @@
             <span class="stat-value" id="val-model">---</span>
           </div>
           <div class="stat-box">
-            <span class="stat-label">Version</span>
+            <span class="stat-label">Variation (0x47)</span>
             <span class="stat-value" id="val-version">---</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">Builder Gen</span>
+            <span class="stat-value" id="val-gen">4 (default)</span>
           </div>
           <div class="stat-box">
             <span class="stat-label">Battery Health</span>
             <span class="stat-value" id="val-health">---</span>
           </div>
           <div class="stat-box">
-            <span class="stat-label">Lock Status</span>
+            <span class="stat-label">Lock</span>
             <span class="stat-value" id="val-lock">---</span>
           </div>
+          <div class="stat-box">
+            <span class="stat-label">Master</span>
+            <span class="stat-value" id="val-master">0/20</span>
+          </div>
+        </div>
+        <div class="controls-row tight" style="margin-top:12px; gap:8px; flex-wrap:wrap;">
+          <label class="inline-label">Gen override
+            <select id="sel-gen">
+              <option value="4" selected>Gen4</option>
+              <option value="3.1">Gen3.1</option>
+              <option value="3">Gen3</option>
+            </select>
+          </label>
+          <button id="btn-vibe" class="btn secondary" disabled>Vibe test</button>
+          <button id="btn-autostart" class="btn secondary" disabled>AutoStart ?</button>
         </div>
       </div>
 
       <div class="card">
-        <h2>Master Profile (Correction Data)</h2>
+        <h2>Master Correction (20)</h2>
         <div id="master-profile-grid" class="master-grid">
-          <!-- Populated by JS -->
           <div class="empty-state">Connect device to load master profile</div>
         </div>
       </div>
-      
+
       <div class="card logs-card">
-        <h2>BLE Logs</h2>
+        <div class="card-head">
+          <h2>BLE Logs</h2>
+          <div class="log-actions">
+            <button id="btn-copy-log" class="btn secondary btn-sm">Copy</button>
+            <button id="btn-clear-log" class="btn secondary btn-sm">Clear</button>
+          </div>
+        </div>
         <pre id="log-output"></pre>
       </div>
     </div>
 
-    <!-- Profile Editor Panel -->
+    <!-- Profile Editor -->
     <div id="panel-profile" class="panel">
       <div class="card header-card">
         <h2>Heating Profile</h2>
-        <div class="controls-row">
-          <label class="btn secondary">
+        <div class="controls-row wrap">
+          <select id="sel-preset" class="select">
+            <option value="">Preset…</option>
+            <option value="Eco">Eco</option>
+            <option value="Long">Long</option>
+            <option value="Strong">Strong</option>
+          </select>
+          <label class="btn secondary btn-sm">
             Load JSON
-            <input type="file" id="file-upload" accept=".json" style="display: none;">
+            <input type="file" id="file-upload" accept=".json,application/json" style="display: none;">
           </label>
-          <button id="btn-export" class="btn secondary">Export JSON</button>
-          <button id="btn-apply" class="btn primary" disabled>Apply to Device</button>
-          <button id="btn-reset" class="btn danger" disabled>Reset Basic</button>
+          <button id="btn-export" class="btn secondary btn-sm" disabled>Export</button>
+          <button id="btn-dryrun" class="btn secondary btn-sm" disabled>Dry-run</button>
+          <button id="btn-reset" class="btn danger btn-sm" disabled>Reset Basic</button>
         </div>
+      </div>
+
+      <div class="card">
+        <label class="check-row">
+          <input type="checkbox" id="chk-enable-write" />
+          <span>Enable device writes (Apply / Reset). Keep off for capture-only sessions.</span>
+        </label>
+        <button id="btn-apply" class="btn primary" disabled style="width:100%; margin-top:12px;">
+          Apply to Device (disabled)
+        </button>
       </div>
 
       <div class="chart-container card">
@@ -77,10 +126,18 @@
       </div>
 
       <div class="card editor-card">
-        <h3>Step Editor</h3>
+        <h3>Step Editor (temp / time)</h3>
         <div id="steps-container" class="steps-container">
-          <div class="empty-state">Load a profile JSON to edit steps</div>
+          <div class="empty-state">Load a profile JSON or preset</div>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Dry-run / Cmd preview</h2>
+          <button id="btn-copy-dry" class="btn secondary btn-sm" disabled>Copy hex</button>
+        </div>
+        <pre id="dryrun-output" class="dryrun">Load profile → Dry-run</pre>
       </div>
     </div>
   </div>
