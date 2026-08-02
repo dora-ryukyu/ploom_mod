@@ -45,6 +45,7 @@ const els = {
   btnCopyDry: $('btn-copy-dry'),
   btnVibe: $('btn-vibe'),
   btnAutostart: $('btn-autostart'),
+  btnRefreshInit: $('btn-refresh-init'),
   chkEnableWrite: $('chk-enable-write'),
   stepsContainer: $('steps-container'),
   heatingChart: $('heating-chart'),
@@ -66,10 +67,13 @@ let deviceState = { autoStart: false };
 const pendingByOpcode = new Map();
 /** Serialize GATT writes — Android throws if two writeValueWithResponse overlap */
 let writeChain = Promise.resolve();
-/** One-shot init pipeline (device often emits 0x30 twice) */
+/** One-shot / pipeline guards */
 let initFlags = {
   requestedVariation: false,
   requestedMaster: false,
+  pipelineRunning: false,
+  gotVariation: false,
+  gotMasterDone: false,
 };
 
 // ---- Tabs ----
@@ -406,16 +410,80 @@ function sendCommand(cmdArray, { settleMs } = {}) {
   return p;
 }
 
-function requestVariationOnce() {
-  if (initFlags.requestedVariation) return;
-  initFlags.requestedVariation = true;
-  sendCommand(REQUESTS.getDeviceVariation).catch((e) => log(String(e)));
+/**
+ * Wait until predicate is true or timeout (RX may arrive before/after write).
+ */
+function waitUntil(predicate, timeoutMs, label) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (predicate()) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - start >= timeoutMs) {
+        log(`waitUntil timeout: ${label} (${timeoutMs}ms)`);
+        resolve(false);
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
 }
 
-function requestMasterOnce() {
-  if (initFlags.requestedMaster) return;
-  initFlags.requestedMaster = true;
-  sendCommand(REQUESTS.getMasterNumber).catch((e) => log(String(e)));
+/**
+ * Official-ish init: Init → Variation → Master, with retries.
+ * Do NOT fire extra writes from every 0x30 (device can be busy / slow to 0x47).
+ */
+async function runInitPipeline() {
+  if (initFlags.pipelineRunning) return;
+  initFlags.pipelineRunning = true;
+  try {
+    log('Init pipeline: start');
+    await sendCommand(REQUESTS.initSeq, { settleMs: 50 });
+    // Let unsolicited status (0x30/33/9f/3c) settle — first capture had ~100–150ms bursts
+    await sleep(250);
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (initFlags.gotVariation) break;
+      log(`Init pipeline: getDeviceVariation attempt ${attempt}/3`);
+      initFlags.requestedVariation = true;
+      await sendCommand(REQUESTS.getDeviceVariation, { settleMs: 30 });
+      const ok = await waitUntil(() => initFlags.gotVariation, 2500, '0x47 variation');
+      if (!ok) log('No 0x47 yet — retrying variation…');
+    }
+
+    if (!initFlags.gotVariation) {
+      log('Init pipeline: variation failed after retries (will still try master)');
+    }
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (initFlags.gotMasterDone) break;
+      log(`Init pipeline: getMasterNumber attempt ${attempt}/3`);
+      initFlags.requestedMaster = true;
+      // reset partial master on retry
+      if (attempt > 1) {
+        masterSlots = new Array(20);
+        masterProfile = null;
+        els.valMaster.textContent = '0/20';
+      }
+      await sendCommand(REQUESTS.getMasterNumber, { settleMs: 30 });
+      const ok = await waitUntil(() => initFlags.gotMasterDone, 4000, 'master 20/20');
+      if (!ok) log('Master incomplete — retrying…');
+    }
+
+    if (initFlags.gotMasterDone) {
+      log('Init pipeline: SUCCESS (master complete)');
+    } else {
+      log('Init pipeline: INCOMPLETE — use Refresh init button or reconnect');
+    }
+  } catch (e) {
+    log('Init pipeline error: ' + e);
+  } finally {
+    initFlags.pipelineRunning = false;
+    updateApplyEnabled();
+  }
 }
 
 function renderMaster() {
@@ -432,6 +500,7 @@ function renderMaster() {
     cell.textContent = val;
     els.masterGrid.appendChild(cell);
   });
+  initFlags.gotMasterDone = true;
   log(`Master complete: [${masterProfile.join(', ')}]`);
   updateApplyEnabled();
 }
@@ -447,30 +516,33 @@ function handleNotify(event) {
     case 0x18:
       break;
     case 0x30:
-      // Device may emit 0x30 more than once; only one variation request
-      requestVariationOnce();
+      // Status only — variation is requested by runInitPipeline (avoids racing writes)
       break;
+    case 0x31: {
+      // Device status change (stand-by / charge / …) — official case "31"
+      if (data.length >= 3) {
+        log(`device status byte=${data[2]} slider=${data[3] ?? '-'} panel=${data[4] ?? '-'}`);
+      }
+      break;
+    }
     case 0x33:
       els.valHealth.textContent = `${data[2]}%`;
       break;
     case 0x35:
-      // Seen on Aura after init (status nibble); keep raw in log only
       break;
     case 0x3c: {
-      // Likely battery level / related (payload e.g. 0x57 = 87)
       if (data.length >= 3) {
-        log(`op 0x3c payload[2]=${data[2]} (often battery-ish)`);
+        // Official batteryLevel-ish mapping uses nearby opcodes; log raw
+        log(`op 0x3c b2=${data[2]} (often ~SoC related)`);
       }
       break;
     }
     case 0x47: {
-      // Official: uint16 LE at offset 2 — Aura log: 21 00 → 33
       const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
       const variation = data.length >= 4 ? view.getUint16(2, true) : data[2];
       els.valVersion.textContent = String(variation);
+      initFlags.gotVariation = true;
       log(`Device variation raw=${variation}`);
-      // Aura A00800GL: keep Gen4 default unless user overrides
-      requestMasterOnce();
       break;
     }
     case 0x44: {
@@ -521,6 +593,7 @@ function setConnectedUi(connected) {
     els.btnConnect.classList.add('secondary');
     els.btnVibe.disabled = false;
     els.btnAutostart.disabled = false;
+    if (els.btnRefreshInit) els.btnRefreshInit.disabled = false;
   } else {
     els.connBadge.textContent = 'Disconnected';
     els.connBadge.className = 'badge badge-off';
@@ -530,6 +603,7 @@ function setConnectedUi(connected) {
     els.btnConnect.disabled = false;
     els.btnVibe.disabled = true;
     els.btnAutostart.disabled = true;
+    if (els.btnRefreshInit) els.btnRefreshInit.disabled = true;
     els.valModel.textContent = '---';
     writeChar = null;
     notifyChar = null;
@@ -603,7 +677,13 @@ els.btnConnect.addEventListener('click', async () => {
 
     masterSlots = new Array(20);
     masterProfile = null;
-    initFlags = { requestedVariation: false, requestedMaster: false };
+    initFlags = {
+      requestedVariation: false,
+      requestedMaster: false,
+      pipelineRunning: false,
+      gotVariation: false,
+      gotMasterDone: false,
+    };
     writeChain = Promise.resolve();
     els.valMaster.textContent = '0/20';
     els.masterGrid.innerHTML = '<div class="empty-state">Loading…</div>';
@@ -619,14 +699,28 @@ els.btnConnect.addEventListener('click', async () => {
 
     setConnectedUi(true);
     els.btnConnect.disabled = false;
+    if (els.btnRefreshInit) els.btnRefreshInit.disabled = false;
 
-    log('Sending InitSeq…');
-    const ack = await sendCommand(REQUESTS.initSeq);
-    if (!ack) log('Init: no RX yet (may still arrive).');
+    // Sequential init with retries (do not chain off every 0x30)
+    await runInitPipeline();
   } catch (error) {
     log('Connect error: ' + error);
     setConnectedUi(false);
   }
+});
+
+els.btnRefreshInit?.addEventListener('click', async () => {
+  if (!writeChar || initFlags.pipelineRunning) return;
+  initFlags.gotVariation = false;
+  initFlags.gotMasterDone = false;
+  initFlags.requestedVariation = false;
+  initFlags.requestedMaster = false;
+  masterSlots = new Array(20);
+  masterProfile = null;
+  els.valMaster.textContent = '0/20';
+  els.masterGrid.innerHTML = '<div class="empty-state">Loading…</div>';
+  updateApplyEnabled();
+  await runInitPipeline();
 });
 
 els.btnVibe.addEventListener('click', async () => {
@@ -720,31 +814,36 @@ els.btnApply.addEventListener('click', async () => {
   }
 });
 
-// Boot + deploy stamp (GitHub Pages injects deploy-meta.json on each deploy)
+// Boot + build stamp (branch Pages serves build-info.js from git)
 async function loadDeployStamp() {
   const el = $('deploy-stamp');
   const hint = $('deploy-hint');
   try {
-    const res = await fetch(`./deploy-meta.json?t=${Date.now()}`, { cache: 'no-store' });
-    if (!res.ok) throw new Error(String(res.status));
-    const meta = await res.json();
-    const label = `deploy ${meta.short || '?'} · ${meta.deployedAt || ''}`;
-    if (meta.runUrl) {
-      el.innerHTML = `<a href="${meta.runUrl}" target="_blank" rel="noopener">${label}</a>`;
-    } else {
-      el.textContent = label;
-    }
-    if (hint) {
-      hint.textContent = `Pages 反映確認: この表示の commit が GitHub の最新と一致すれば更新済み。`;
-    }
-    log(`Deploy stamp: ${meta.short} @ ${meta.deployedAt}`);
-  } catch {
-    el.textContent = 'deploy: local / not stamped';
+    // Prefer committed build-info.js (works on /web-app/ branch Pages)
+    const mod = await import(`./build-info.js?t=${Date.now()}`);
+    const b = mod.BUILD_INFO || {};
+    const label = `build ${b.short || b.id || '?'} · ${b.stampedAt || ''}`;
+    el.textContent = label;
     if (hint) {
       hint.textContent =
-        'deploy-meta.json が無い = まだ Pages Actions 未デプロイ、またはローカル配信。';
+        '反映確認: この build id が変わる = 新しい main.js が届いている。変わらなければハードリロード。';
     }
-    log('Deploy stamp: (no deploy-meta.json — local or pre-Actions host)');
+    log(`Build stamp: ${b.id || label}`);
+  } catch (e) {
+    el.textContent = 'build: unknown';
+    log('Build stamp failed: ' + e);
+  }
+  // Optional Actions meta (if ever deployed that way)
+  try {
+    const res = await fetch(`./deploy-meta.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const meta = await res.json();
+      if (meta.short && meta.short !== 'local') {
+        log(`Pages Actions meta: ${meta.short} @ ${meta.deployedAt}`);
+      }
+    }
+  } catch {
+    /* ignore */
   }
 }
 
