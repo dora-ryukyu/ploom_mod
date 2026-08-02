@@ -189,16 +189,21 @@ node scripts/sync_protocol_webapp.js
 公式 JS の `profileNumber` 0/1/2 は **アプリ↔デバイス内部フラグ**（カスタム有無・ログ用）であり、「本体で Standard / Custom を切り替える画面」ではない、と解釈する。  
 以前の「Apply 後に本体でスロットを選べ」は **誤り**。
 
-### 実測セッション長（2026-08 SuperLong Apply 後）
+### 実測セッション長
 
-- ステップ秒合計の設計: **480s ≒ 8.0 min**
-- 加熱開始からの実測: **おおよそ 5:30（330s）**
+| プロファイル | ステップ合計 | 実測 wall | 備考 |
+|--------------|--------------|-----------|------|
+| **Long**（公式 / 自作クライアント） | 439s（7.32 min） | **~6.5 min** | 比率 約 0.89。経路は信用可 |
+| **SuperLong v1**（高温+終端変更+st=9） | 480s 設計 | **~5:30** | 形式が Long から外れ短命化 |
+| **SuperLong v2**（現行） | **543s（9.05 min）** | 未測 | Long 温度・`st=8`・step07 temp=0 維持。step05=300 / step06=110 のみ延長。壁時計 ~8 min 狙い |
+
 - `puffFinishCountEnabled=0` のため **パフ回数上限は主因にしにくい**
-- 5:30 は SuperLong の step05 帯に載る。step06–08 の「伸ばし」まで到達していないか、**ステップ合計≠ウォールタイム**の可能性
+- **ステップ合計 ≠ ウォールタイム** は Long でも確認済み
+- v1 の失敗要因候補: 終端 step を加熱に置換 / 温度上昇 / enableStep=9 の同時変更
 
 ### まだ未解決
 
-1. **公式 Long の実測ウォールタイム**（測り方揃えて比較）— 次の最優先
+1. **SuperLong v2 の実測ウォールタイム**（次の最優先）
 2. Device Info の FW 文字列（任意）
 3. 公式 post-write（`i5`/`i6` stick-detect 等）を Apply 後にやらない影響
 4. **Strong.json は空**（使えない）
@@ -215,7 +220,8 @@ node scripts/sync_protocol_webapp.js
 | **B** | Dry-run | live master で 32 cmds — **完了** |
 | **C** | 短い write | Vibe — 実施可 |
 | **D** | Profile apply | 0x43 + **実吸い時間**（スロット選択は不要）— **進行中** |
-| **D2** | 公式 Long 実測 | 同じ測り方で分秒を記録 |
+| **D2** | 公式 Long 実測 | **~6.5 min 確認済み** |
+| **D3** | SuperLong v2 実測 | Long 構造維持・時間のみ延長 → wall ~8 min 狙い |
 | **E** | 自宅鯖 + Tailscale | Pages から移行（任意） |
 
 ---
