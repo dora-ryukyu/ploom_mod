@@ -196,7 +196,8 @@ node scripts/sync_protocol_webapp.js
 | **Long**（公式 / 自作クライアント） | 439s（7.32 min） | **~6.5 min** | 比率 約 0.89。経路は信用可 |
 | **SuperLong v1**（高温+終端変更+st=9） | 480s 設計 | **~5:30** | 形式が Long から外れ短命化 |
 | **SuperLong v2**（step05=**300**) | 543s つもり | **~4 min** | **原因確定: step `time` は wire 上 uint8。300→44 に wrap。実効合計 ≈287s → wall ~4.3 min と一致** |
-| **SuperLong v3**（現行） | **543s（9.05 min）** | 未測 | step05=**255** / step06=**155**（いずれも ≤255）。温度・`st=8`・step07 temp=0 は Long 維持。壁時計 ~8 min 狙い |
+| **SuperLong v3** | **543s（9.05 min）** | **~7:50** | step05=255 / step06=155。温度 Long 維持。比率 ≈0.86 |
+| **SuperLong v4**（現行） | 543s（同上） | 未測 | v3 時間のまま加熱帯 **+10°C**（310 / 231 / 250 / 260、−220 と終端 0 は維持） |
 
 - `puffFinishCountEnabled=0` のため **パフ回数上限は主因にしにくい**
 - **ステップ合計 ≠ ウォールタイム** は Long でも確認済み
@@ -205,7 +206,7 @@ node scripts/sync_protocol_webapp.js
 
 ### まだ未解決
 
-1. **SuperLong v3 の実測ウォールタイム**（次の最優先）
+1. **SuperLong v4 の実測**（+10°C で長さ ~7:50 を維持できるか）
 2. Device Info の FW 文字列（任意）
 3. 公式 post-write（`i5`/`i6` stick-detect 等）を Apply 後にやらない影響
 4. **Strong.json は空**（使えない）
@@ -223,7 +224,8 @@ node scripts/sync_protocol_webapp.js
 | **C** | 短い write | Vibe — 実施可 |
 | **D** | Profile apply | 0x43 + **実吸い時間**（スロット選択は不要）— **進行中** |
 | **D2** | 公式 Long 実測 | **~6.5 min 確認済み** |
-| **D3** | SuperLong v3 実測 | u8-safe 延長（255+155）→ wall ~8 min 狙い |
+| **D3** | SuperLong v3 実測 | **~7:50 確認**（u8-safe 延長成功） |
+| **D4** | SuperLong v4 実測 | 時間固定 + 加熱帯 +10°C |
 | **E** | 自宅鯖 + Tailscale | Pages から移行（任意） |
 
 ---
