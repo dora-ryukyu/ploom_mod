@@ -1,276 +1,320 @@
 # Ploom BLE / Profile Mod — 開発レポート
 
-最終更新: 2026-08-02
+**最終更新:** 2026-08-02  
+**対象機:** Ploom Aura A00800GL（ほかシリーズもプロトコル上は共通部分あり）  
+**本線:** Android Chrome + Web Bluetooth（GitHub Pages 静的配信）  
+**公開 URL:** https://dora-ryukyu.github.io/ploom_mod/
+
+> **現在の検証ステータス:** SuperLong **v4**（時間は v3 成功形・加熱帯 +10°C）を **実吸い検証中**。壁時計・体感の最終判定は未確定。
 
 ---
 
 ## 1. 目的
 
-Ploom デバイス（対象: **Ploom aura A00800GL** など）の BLE 加熱プロファイルを、公式アプリ以外から **読み取り・プレビュー・（将来）安全な書き込み** できるようにする。
+公式アプリ以外から Ploom の加熱プロファイルを:
 
-現状の優先順位:
+1. **読み取る**（Init / Variation / Master）
+2. **プレビューする**（Dry-run・公式と同等の cmd 列）
+3. **安全に焼き込む**（オプトイン + 0x43 完了確認）
 
-1. Android Chrome + Web Bluetooth で **読み取りパイプラインを確定**（Init → Version → Master）
-2. 公式と一致する **コマンド生成（dry-run）**
-3. 書き込みは **明示オプトイン + 0x43 完了待ち** のみ
+カスタム長時間・やや強めプロファイル（SuperLong）を、公式 Long を壊さずに延長・強化できるところまで到達するのが当面のゴール。
 
 ---
 
-## 2. 現状サマリ
+## 2. 現状サマリ（2026-08-02）
 
 | 領域 | 状態 | メモ |
 |------|------|------|
-| 公式 JS 入手 | **完了** | `js/72761-*.js`, `js/20896.js` 等 |
-| プロトコル整理 | **完了** | 正本 `protocol/`（KEY_MAP 208、Gen3/4 ビルダー） |
-| web-app 差し替え | **完了** | `@protocol` 経由。旧 `web-app/protocol.js` は破棄 |
-| 全 TX/RX hex ログ | **完了** | Copy ボタンあり |
-| Dry-run | **完了** | master 未取得時は zeros プレースホルダ明示 |
-| 書き込み安全弁 | **完了** | デフォルト OFF。master 20 必須。二重 confirm |
-| 実機 RX（この Aura） | **未** | Windows では RX 空が多発。Android 待ち |
-| 書き込み実成功 | **未検証** | 実装はあるが実機未確認 |
-| GitHub Pages 配信 | **準備可** | `web-app/` を静的公開（**ビルド不要**） |
-| 自宅鯖 + Tailscale | **後回し** | 完成後デプロイ想定 |
+| 公式 JS 解析 | **完了** | `js/72761-*.js`, `js/20896.js` 等 |
+| プロトコル正本 | **完了** | `protocol/`（KEY_MAP 208、Gen3/4） |
+| web-app 静的化 | **完了** | ビルド不要 ESM。Pages デプロイ |
+| Android 読み取り | **完了** | Master 20 取得・ログ Copy |
+| Dry-run | **完了** | live master で Gen4=32 cmds |
+| Profile Apply | **成功実績あり** | 0x43 受信。本体は **1 本焼き**のみ |
+| Long 実測 | **完了** | 公式・自作とも wall **~6.5 min** |
+| SuperLong 長さ | **v3 で成功** | wall **~7:50**（ステップ 543s） |
+| SuperLong 温度 | **v4 検証中** | v3 時間 + 加熱帯 **+10°C** |
+| Strong プリセット | **不可** | `heatProfileData` 空 |
+| 自宅鯖 + Tailscale | **後回し** | Pages で十分開発可能 |
+| DFU / FW 更新 | **触らない** | プロファイル作業と無関係 |
 
 ---
 
 ## 3. アーキテクチャ
 
 ```
-js/*                        # 公式 minified（immutable 参照）
-  ↓ extract_data.js + gen_rest.js
-protocol/*                  # 論理の正本（リポジトリルート）
-  ↓ sync / gen_rest がコピー
-web-app/protocol/*          # ブラウザ用コピー（相対 import）
+js/*                         # 公式 minified（参照のみ）
+  ↓ extract_data.js / gen_rest.js
+protocol/*                   # 論理の正本
+  ↓ sync_protocol_webapp.js
+web-app/protocol/*           # ブラウザ用コピー
 web-app/index.html + main.js
-  ↓ 静的サーブのみ（ビルド不要）
-任意の HTTPS ホスト / GitHub Pages
+  ↓ GitHub Actions（bundler なし）
+GitHub Pages (HTTPS)
 ```
-
-**ビルドは不要。** `index.html` → `./main.js` → `./protocol/*.js` の素の ES modules。
 
 | パス | 役割 |
 |------|------|
-| `protocol/` | 論理の正本（抽出・編集の源） |
-| `web-app/protocol/` | 上記のコピー。ブラウザはここだけ見る |
-| `web-app/main.js` | 接続・ログ・dry-run・gated apply |
-| `web-app/public/profiles/` | Eco / Long / Strong プリセット |
+| `protocol/` | ビルダー・KEY_MAP・heatMath の正本 |
+| `web-app/` | 静的サイト全体（Pages のルート） |
+| `web-app/profiles/` | Eco / Long / SuperLong プリセット |
+| `userHeatProfile/` | 公式 API 由来 + 自作 SuperLong の保管 |
+| `docs/Ploom_BLE_Protocol.md` | プロトコル詳細メモ |
 | `docs/SOURCE_INVENTORY.md` | ソース棚卸し |
-| `docs/Ploom_BLE_Protocol.md` | 旧手書きメモ（矛盾時は `protocol/` 優先） |
-| `cli/pair-watch.js` | Windows noble 実験（本線ではない） |
+| `.github/workflows/pages.yml` | `web-app/` を stamp して Pages へ |
+
+**ビルドは不要。** Secure Context（HTTPS）と Android Chrome が必要。
 
 ---
 
-## 4. 公式から確定した仕様
+## 4. 確定したプロトコル要点
 
 ### BLE
 
-- Service `53654010-…-bc58084aca28`
-- Write `…4011…` / Notify-Indicate `…4012…`
-- Init `[2,227,0]` →（0x30 等）→ Variation `[2,224,0]` → Master `[2,165,0]` → 0x44/45/46
+| 項目 | 値 |
+|------|-----|
+| Main Service | `53654010-a391-4a65-83fa-bc58084aca28` |
+| Write | `…4011…` |
+| Indicate | `…4012…`（notify=false でも `startNotifications` で可） |
+| 他 | Device Info `0x180A`、DFU Service `0xFEF5`（65269） |
 
-### プロファイル書き込み
+**Init パイプライン:**  
+`[2,227,0]` → Variation `[2,224,0]` → Master `[2,165,0]` → RX `0x44/45/46`
 
-- Gen3: ヘッダ表 `tI`（27 cmds）、温度式 A、puff = `Int32LE(trunc(puff*1000))`
-- Gen4: ヘッダ表 `tL`（32 cmds）、温度式 B、step0 に eeprom、step に raw temp u16
-- 各 cmd: GATT write 完了待ち（公式 `waitWriteValueResponse`）。**notify 1:1 必須ではない**
-- バッチ後: **opcode 0x43**（timeout 5s）
-- 公式はその後 stick/false-detect 等（未移植・後回し可）
-
-### 難読化 JSON
-
-- `heatProfileData` は 2 文字キー。`protocol/keyMap.js` に **208 エントリ**（soc・leaflet・hoort 含む）
-
----
-
-## 5. 修正した既知バグ（旧 web-app）
-
-| 問題 | 旧挙動 | 現在 |
-|------|--------|------|
-| KEY_MAP 不完全 | filter 等が 0 化 | 208 キー decode |
-| puff 符号化 | ×1000 なし / 型誤り | Int32×1000 |
-| Gen 混在 | tL 固定 + 温度式 A | Gen3/4 分離、UI で override |
-| Apply | 50ms 連打で成功扱い | write 失敗で中断 + 0x43 待ち |
-| master なし書き込み | zeros で進行 | Apply 不可 |
-| ログ | 一部文言のみ | 全 TX/RX hex + Copy |
-
----
-
-## 6. Windows 実験で分かったこと
-
-- Settings の「接続済み」は `AlwaysShowDeviceAsConnected` 等で **見た目だけ**のことがある
-- noble / bleak でもリンク後 GATT Unreachable や **RX 0** が多発
-- MediaTek 内蔵 BT + OS 所有の組み合わせがボトルネックになりやすい
-- **本線は Android Web Bluetooth**（外出先・自宅どちらでも）
-- ドングルは任意。無くても Android で進める方針
-
----
-
-## 7. web-app の使い方（Android / 開発）
-
-### ローカル（ビルド不要）
-
-```bash
-# どれでも可 — web-app をドキュメントルートにする
-npx --yes serve web-app
-# または
-python -m http.server 8080 --directory web-app
-```
-
-`file://` だと ES modules / Web Bluetooth が制限されるので、簡単な HTTP サーバを当てる。  
-PC ブラウザは WebBT 非対応のことが多い → 実機検証は Pages か HTTPS ホスト。
-
-Vite（`cd web-app && npm run dev`）は任意。HMR 用で、必須ではない。
-
-### GitHub Pages（開発中推奨）
-
-Workflow: `.github/workflows/pages.yml` が **`web-app/` をそのまま** Pages にデプロイ（bundler なし）。
-
-**初回だけ** リポジトリ Settings → **Pages** → Build and deployment → Source を **GitHub Actions** にする。
-
-反映確認:
-
-1. Actions タブで `Deploy web-app to Pages` が緑
-2. アプリ画面ヘッダの **`deploy <short-sha> · <UTC time>`**（`deploy-meta.json`）
-3. ログ先頭の `Deploy stamp: …`
-4. 古いキャッシュが残る場合は URL に `?` を付けるか、Chrome でハードリロード
-
-必要: **HTTPS**、Android **Chrome**、端末の BT オン。
-
-ルートの `protocol/` を直したあとは:
-
-```bash
-node scripts/sync_protocol_webapp.js
-# または extract 後の gen_rest.js が自動コピー
-```
-
-### 初回セッション（書き込み禁止）
-
-1. Connect → Ploom 選択
-2. ログに TX/RX hex が出ること
-3. Master 20/20 になること
-4. **Copy** でログを PC に送る
-5. Preset または JSON Load → **Dry-run**（送信しない）
-6. Apply は **Enable device writes** を入れるまで押しても無効
-
-### Gen 選択
-
-- デフォルト **Gen4**（Aura 想定）
-- 実機 FW / 挙動を見て 3.1 / 3 に変更
-- dry-run / apply 両方に効く
-
----
-
-## 8. 実機キャプチャ（Aura / Android）— Phase A 成功
-
-2026-08 ログ（要約）:
+この Aura 実測:
 
 | 項目 | 値 |
 |------|-----|
-| TX char | write=true, **writeWithoutResponse=false** |
-| RX char | **indicate=true** only（notify=false）→ `startNotifications` で OK |
-| 0x47 variation | **33** (`05 47 21 00 00 00`) |
-| Battery health 0x33 | **100%** (`02 33 64`) |
-| Lock 0x9f | unlocked |
-| 追加 RX | 0x3c（例: 0x57）、0x35（例: 01 00 00 00）— 未完全解読 |
+| variation (0x47) | **33** |
+| battery health (0x33) | **100%** |
 | Master 20 | `[1, 1537, 1509, 1503, 2423, 2419, 1912, 1227, 1220, 1119, 1454, 1059, 3203, 3192, 1585, 1022, 521, 595, 595, 3512]` |
 
-既知ノイズ（修正済想定）: Init 後 0x30 が複数回来て variation/master 要求が二重化し、`GATT operation already in progress` が出ることがあった → **write キュー + one-shot 連鎖**。
+### プロファイル書き込み
 
-### デバイス上のプロファイル（重要・訂正）
+- **Gen4（Aura）:** ヘッダ表 `tL`、**32 cmds**、温度式 B、step0 に eeprom、各 step に raw temp u16
+- **Gen3:** `tI` 27 cmds、温度式 A
+- puff: `Int32LE(trunc(puffThreshold * 1000))`
+- 温度: `signedTargetHeat`（abs → 式 → 符号戻し）。負温度（例 −220）は公式どおり存在
+- バッチ完了: **opcode `0x43`**
+- 公式 post-write（stick detect 等 i5/i6）は **未移植**（焼付自体は 0x43 で通る）
 
-**本体に「複数プロファイルから選ぶ」UIは無い**（ユーザー確認）。
+### 重要制約: step `time` は **uint8（0–255 秒）**
 
-| 状態 | 実機の意味 |
-|------|------------|
-| Apply 成功（0x43） | **今の加熱レシピがその1本に置き換わる** |
-| Reset Basic `[2,166,0]` | **標準（工場/デフォルト）に戻る** |
-| アプリ JSON の Eco/Long/SuperLong | **PC/Web 側の素材**。本体メニュー項目ではない |
+公式も `Number(i.time)` を **1 バイト**として配列に載せ、GATT は `Uint8Array` で送る。
 
-公式 JS の `profileNumber` 0/1/2 は **アプリ↔デバイス内部フラグ**（カスタム有無・ログ用）であり、「本体で Standard / Custom を切り替える画面」ではない、と解釈する。  
-以前の「Apply 後に本体でスロットを選べ」は **誤り**。
+| JSON | wire（実際） |
+|------|----------------|
+| 231（Long max 級） | 231 |
+| **300** | **44**（300 & 0xFF）← v2 事故の原因 |
+| 255 | 255（上限） |
 
-### 実測セッション長
+`protocol/buildProfile.js` は **time > 255 で throw** するよう修正済み。  
+1 ステップ 4 分超の延長は **不可能**。長くするなら **複数 step に分割**する。
 
-| プロファイル | ステップ合計 | 実測 wall | 備考 |
-|--------------|--------------|-----------|------|
-| **Long**（公式 / 自作クライアント） | 439s（7.32 min） | **~6.5 min** | 比率 約 0.89。経路は信用可 |
-| **SuperLong v1**（高温+終端変更+st=9） | 480s 設計 | **~5:30** | 形式が Long から外れ短命化 |
-| **SuperLong v2**（step05=**300**) | 543s つもり | **~4 min** | **原因確定: step `time` は wire 上 uint8。300→44 に wrap。実効合計 ≈287s → wall ~4.3 min と一致** |
-| **SuperLong v3** | **543s（9.05 min）** | **~7:50** | step05=255 / step06=155。温度 Long 維持。比率 ≈0.86 |
-| **SuperLong v4**（現行） | 543s（同上） | 未測 | v3 時間のまま加熱帯 **+10°C**（310 / 231 / 250 / 260、−220 と終端 0 は維持） |
+### 本体プロファイルモデル
 
-- `puffFinishCountEnabled=0` のため **パフ回数上限は主因にしにくい**
-- **ステップ合計 ≠ ウォールタイム** は Long でも確認済み
-- **step duration は 1 バイト（0–255 秒/ステップ）**。公式 Long の最長 step は 231s。`buildProfile` は >255 で throw するよう修正済み
-- v1 の失敗要因候補: 終端 step を加熱に置換 / 温度上昇 / enableStep=9 の同時変更（v2 とは別問題）
+**本体にプロファイル選択 UI は無い**（ユーザー確認）。
 
-### まだ未解決
+| 操作 | 意味 |
+|------|------|
+| Apply（0x43） | **今の加熱レシピ 1 本を上書き** |
+| Reset Basic `[2,166,0]` | **標準に戻る** |
+| アプリの Eco/Long/SuperLong | **PC/Web 側の素材**。本体メニュー項目ではない |
 
-1. **SuperLong v4 の実測**（+10°C で長さ ~7:50 を維持できるか）
-2. Device Info の FW 文字列（任意）
-3. 公式 post-write（`i5`/`i6` stick-detect 等）を Apply 後にやらない影響
-4. **Strong.json は空**（使えない）
-5. 0x3c / 0x35 の正式意味
-6. lastThreshold / 保護による早期終了の有無
+公式の `profileNumber` 0/1/2 はアプリ↔デバイス内部フラグであり、「本体でスロット切替」ではない。
 
----
+### DFU モード（参考・非本線）
 
-## 9. 今後のマイルストーン
-
-| Phase | 内容 | 完了条件 |
-|-------|------|----------|
-| **A** | Android 読み取り | Init/Version/Master + ログ Copy — **完了** |
-| **B** | Dry-run | live master で 32 cmds — **完了** |
-| **C** | 短い write | Vibe — 実施可 |
-| **D** | Profile apply | 0x43 + **実吸い時間**（スロット選択は不要）— **進行中** |
-| **D2** | 公式 Long 実測 | **~6.5 min 確認済み** |
-| **D3** | SuperLong v3 実測 | **~7:50 確認**（u8-safe 延長成功） |
-| **D4** | SuperLong v4 実測 | 時間固定 + 加熱帯 +10°C |
-| **E** | 自宅鯖 + Tailscale | Pages から移行（任意） |
+- コマンド `[2, 255, 0]`、状態 RX `0xFE`（`dfuStatus`）
+- 公式は SUOTA/SPOTA で FW 転送 → reboot
+- **加熱プロファイルとは無関係。誤送信禁止**
 
 ---
 
-## 10. 再生成・検証コマンド
+## 5. 実装で潰した既知問題
 
-```bash
-# 公式バンドルから KEY_MAP / headers 再抽出
-node scripts/extract_data.js
-node scripts/gen_rest.js
+| 問題 | 症状 | 対処 |
+|------|------|------|
+| Windows BLE RX 空 | 接続しても notify 来ない | **Android WebBT 本線** |
+| GATT already in progress | Init 二重送信 | write キュー + one-shot 連鎖 |
+| 0x43 偽タイムアウト | RX に 0x43 があるのに失敗表示 | waiter を write ループ **前**に arm |
+| Preset 404 on Pages | Vite `public/` のみに JSON | `web-app/profiles/` + dual fetch |
+| Deploy stamp `local` | ブランチ Pages / パス誤解 | Actions で stamp、サイトルートは `/ploom_mod/` |
+| step time >255 | SuperLong v2 が ~4 分で終了 | u8 検証 + v3 で 255/155 分割 |
+| 「本体でプロファイル選択」誤解 | 焼いたのに別スロット想定 | **1 本焼きモデル**に docs 訂正 |
 
-# プロトコル単体スモーク（Eco → gen3/4 cmds）
-node scripts/smoke_protocol.js
+---
 
-# ブラウザ用コピーを更新
-node scripts/sync_protocol_webapp.js
+## 6. SuperLong 実験ログ（時系列）
+
+目標の変遷: 公式 Long より **長く**（壁時計 ~8 分）→ その後 **やや熱く**。
+
+### ベースライン: 公式 Long
+
+| 項目 | 値 |
+|------|-----|
+| enableStep | 8 |
+| 有効ステップ秒合計 | **439s（7.32 min）** |
+| 実測 wall（公式アプリ / 自作クライアント） | **~6.5 min（390s）** |
+| wall / step 比 | **≈ 0.89** |
+| 温度骨子 | 予熱 300 → −220 → 221 → 240 → 250 → **終端 temp=0** |
+| 最長 step | step05 = **231s**（いずれも ≤255） |
+
+**結論:** 書き込み経路は信用できる。ステップ合計は壁時計より長い（常に wall < step sum）。
+
+### v1 — 失敗（構造破壊 + 高温同時）
+
+- 高温（315 帯）、`st=9`、step07 を加熱延長、終端 temp=0 を破壊
+- 設計 480s → 実測 **~5:30**
+- 原因切り分け不能（形式・温度・st が同時変更）
+
+### v2 — 失敗（uint8 wrap）※原因確定
+
+- Long 構造維持、温度そのまま、step05=**300** / step06=110、合計つもり 543s
+- 実測 **~4 min**
+- **300 → wire 44**。実効合計 ≈ **287s** → ×0.89 ≒ **~4.3 min** と実測一致
+
+### v3 — 成功（長さ）
+
+| 項目 | 値 |
+|------|-----|
+| step05 / step06 | **255s @ 240** / **155s @ 250** |
+| その他 | Long と同一温度・`st=8`・step07 temp=**0** |
+| ステップ合計 | **543s（9.05 min）** |
+| 実測 wall | **~7:50**（計測に多少のブレあり） |
+| wall / step 比 | **≈ 0.86**（Long と同系統） |
+
+**結論:**  
+- uint8 を守れば **時間延長は本体に効く**  
+- 終端 temp=0 と Long 骨格を維持するのが安全  
+- 「543s ステップ → 約 8 分壁時計」の換算が使える
+
+### v4 — 検証中（温度 +10°C）
+
+時間は **v3 固定**。加熱パスのみ +10°C。
+
+| step | 時間 (s) | Long °C | v4 °C |
+|------|----------|---------|-------|
+| 00–02 予熱 | 60+19+15 | 300 | **310** |
+| 03 特殊 | 15 | −220 | −220（維持） |
+| 04 遷移 | 9 | 221 | **231** |
+| 05 本加熱 | **255** | 240 | **250** |
+| 06 後半 | **155** | 250 | **260** |
+| 07 終端 | 15 | **0** | **0**（維持） |
+| enableStep | 8 | 8 | 8 |
+| ステップ合計 | 543s | | 543s |
+
+| 見る指標 | 期待 / 判定 |
+|----------|-------------|
+| 壁時計 | v3 同様 **~7:30–8:00** なら温度上げは長さを大きく削っていない |
+| 明らかに短い（≤6.5m 等） | 保護・閾値・早期終了の疑い → 温度を戻す or 上げ幅を分ける |
+| 体感 | 強さ・焦げ・ vib・吸いごたえ（主観） |
+
+**デプロイ:** `1cd8ca7` 系（Pages success）。プリセット名表示: `SuperLong v4`。
+
+---
+
+## 7. 設計ルール（実験から得た）
+
+1. **一度に一個だけ変える**（長さ XOR 温度。v1 の反省）
+2. **step time ≤ 255**。超えるなら step 分割
+3. **Long の終端形を壊さない**（最後の有効 step 付近に temp=0）
+4. **`enableStep` は公式パターンに寄せる**（Long=8。不用意に 9 にしない）
+5. **壁時計目標 → ステップ秒は ÷0.86〜0.89 で多めに積む**
+6. 本体は **1 本焼き**。Apply 成功 = それが唯一の現行レシピ
+7. DFU・Reset は別物。Reset は標準復帰用
+
+換算の目安:
+
+```
+目標 wall (s) ≈ step_sum × 0.86〜0.89
+8 分 wall (480s) → step_sum ≈ 540〜560s  （v3 の 543s が実測 7:50 でほぼ妥当）
 ```
 
-直近スモーク（Eco）:
+---
 
-- KEY_MAP 208、未マップキー 0
-- gen4: 32 cmds / gen3: 27 cmds
-- puff `-0.01` → `f6 ff ff ff`
-- 静的 import: `./protocol/index.js`（bundler 不要）
+## 8. web-app 操作（実機）
 
+1. https://dora-ryukyu.github.io/ploom_mod/ を Android Chrome で開く  
+2. ヘッダの **deploy stamp** が期待 commit か確認（古ければハードリロード）  
+3. Connect → Init 完了・Master 20/20  
+4. Preset **SuperLong** → 自動 Dry-run（32 cmds、step 時間 ≤255）  
+5. **Enable device writes** → Apply（二重 confirm）→ **0x43**  
+6. 加熱開始〜終了の **mm:ss** と体感を記録（Long と同じ測り方）
+
+安全弁: 書き込みデフォルト OFF / master 必須 / confirm 二回。
+
+Reset Basic で標準に戻せる（カスタムが気に入らないとき）。
 
 ---
 
-## 11. 判断ログ（方針）
+## 9. マイルストーン
+
+| Phase | 内容 | 状態 |
+|-------|------|------|
+| **A** | Android 読み取り | **完了** |
+| **B** | Dry-run（live master） | **完了** |
+| **C** | 短 write（Vibe 等） | 実施可 |
+| **D** | Profile apply + 0x43 | **完了** |
+| **D2** | Long 実測 ~6.5 min | **完了** |
+| **D3** | SuperLong 長さ（v3 ~7:50） | **完了** |
+| **D4** | SuperLong 温度（v4 +10°C） | **検証中** |
+| **D5** | 必要なら +5〜10°C 追加 or 分割延長 | 未 |
+| **E** | 自宅鯖 + Tailscale | 任意・後回し |
+| — | Strong 再取得 / post-write 移植 / opcode 解読 | 低優先 |
+
+---
+
+## 10. 未解決・バックログ
+
+1. **v4 実測結果**（長さ維持？ 体感？）← **今ここ**
+2. 公式 post-write（i5/i6）未移植の実害の有無
+3. `lastThreshold` / 保護が高温で早期終了するか
+4. Strong.json 空（API 再取得が必要）
+5. RX `0x3c` / `0x35` の正式意味
+6. Device Info の FW 文字列（任意）
+7. 255s 超の長時間を **step 分割**でどこまで伸ばせるか
+
+---
+
+## 11. 判断ログ
 
 | 判断 | 理由 |
 |------|------|
-| Android 本線 | Win BLE スタックが不安定。WebBT は公式と同じ経路 |
-| 開発は GitHub Pages | Secure Context が簡単。完成後 Tailscale 鯖でよい |
-| protocol/ を正本 | web-app 内の手書き protocol が公式と乖離していた |
-| 書き込みデフォルト OFF | 外出先の誤焼防止。まずキャプチャが価値 |
-| Windows CLI は補助 | ペアリング実験には使ったが本線にしない |
+| Android + Pages 本線 | Win BLE 不安定。HTTPS + WebBT が公式と同経路 |
+| protocol/ 正本 | web-app 内手書きが公式と乖離していた |
+| 書き込みデフォルト OFF | 誤焼防止。まず読取・dry-run |
+| 長さを温度より先に確定 | 変数を分離しないと ~5:30 / ~4:00 の原因が不明のまま |
+| uint8 をコードで強制 | v2 再発防止（配列上は 300 に見えて wire は 44） |
+| DFU は触らない | FW ブリックリスク。プロファイル目的外 |
+| 1 本焼きモデル | ユーザー訂正。スロット選択仮説を廃棄 |
 
 ---
 
-## 12. 変更ファイル（この整理・差し替え）
+## 12. 主要ファイル
 
-- `protocol/*` — 新規正本
-- `scripts/extract_data.js`, `gen_rest.js`, `smoke_protocol.js`
-- `web-app/main.js`, `index.html`, `style.css`, `vite.config.js`
-- `web-app/public/profiles/*`
-- `web-app/protocol.js` — 退役（import すると throw）
-- `docs/SOURCE_INVENTORY.md`, `docs/DEVELOPMENT_REPORT.md`（本ファイル）
+| パス | 内容 |
+|------|------|
+| `protocol/buildProfile.js` | Gen3/4 ビルダー + **time u8 チェック** |
+| `protocol/heatMath.js` | 温度式 A/B |
+| `protocol/keyMap.js` | 208 エントリ |
+| `web-app/main.js` | 接続・キュー・Apply・0x43 |
+| `userHeatProfile/SuperLong.json` | **現行 v4** 定義 |
+| `userHeatProfile/Long.json` | 公式 Long（比較基準） |
+| `docs/Ploom_BLE_Protocol.md` | プロトコル詳細 |
+| `docs/DEVELOPMENT_REPORT.md` | 本レポート |
+
+### 再生成
+
+```bash
+node scripts/extract_data.js
+node scripts/gen_rest.js
+node scripts/smoke_protocol.js
+node scripts/sync_protocol_webapp.js
+```
+
+---
+
+## 13. 一行まとめ
+
+> **Android から公式相当の焼付は通る。step 時間は 255 秒が上限。Long 骨格を保ったまま 543s 積むと壁時計 ~7:50。いまはその時間のまま +10°C した v4 を検証中。**
