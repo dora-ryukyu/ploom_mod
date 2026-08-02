@@ -49,7 +49,17 @@ const els = {
   chkEnableWrite: $('chk-enable-write'),
   stepsContainer: $('steps-container'),
   heatingChart: $('heating-chart'),
+  profileMeta: $('profile-meta'),
+  chartScale: $('chart-scale'),
+  chartLegend: $('chart-legend'),
+  stepsSummary: $('steps-summary'),
 };
+
+/** Chart Y range (°C abs). Wide so Eco 320 / SuperLong plateaus are readable. */
+const CHART_TEMP_MAX = 340;
+const CHART_TEMP_MIN = 0;
+/** Official / measured: wall clock ≈ step-sum × this (Long/SuperLong). */
+const WALL_RATIO = 0.86;
 
 // ---- State ----
 let bleDevice = null;
@@ -78,15 +88,63 @@ let initFlags = {
 /** Set when RX 0x43 arrives (may be during profile write loop, before we await it) */
 let sawProfileWriteDone = false;
 
-// ---- Tabs ----
-els.tabs.forEach((tab) => {
-  tab.addEventListener('click', () => {
-    els.tabs.forEach((t) => t.classList.remove('active'));
-    els.panels.forEach((p) => p.classList.remove('active'));
-    tab.classList.add('active');
-    $(tab.dataset.target).classList.add('active');
+// ---- Tabs (Profile is default in HTML) ----
+function showPanel(targetId) {
+  els.tabs.forEach((t) => {
+    const on = t.dataset.target === targetId;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
   });
+  els.panels.forEach((p) => {
+    const on = p.id === targetId;
+    p.classList.toggle('active', on);
+    if (on) p.removeAttribute('hidden');
+    else p.setAttribute('hidden', '');
+  });
+}
+
+els.tabs.forEach((tab) => {
+  tab.addEventListener('click', () => showPanel(tab.dataset.target));
 });
+
+/**
+ * Step duration on wire is uint8 seconds (0–255), not a mystery unit.
+ * UI shows m:ss for humans; inputs still edit raw device seconds.
+ */
+function formatDuration(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m <= 0) return `${r}s`;
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
+function stepList(profile) {
+  const out = [];
+  if (!profile) return out;
+  const en = Number(profile.enableStep);
+  const enableStep = Number.isFinite(en) && en > 0 ? en : 20;
+  for (let i = 0; i <= 19; i++) {
+    const key = `step${String(i).padStart(2, '0')}`;
+    const step = profile[key];
+    if (!step) continue;
+    const time = Number(step.time) || 0;
+    const temp = Number(step.temperature) || 0;
+    const enabled = i < enableStep;
+    out.push({ i, key, step, time, temp, enabled });
+  }
+  return out;
+}
+
+function profileTimingSummary(profile) {
+  const steps = stepList(profile);
+  let sum = 0;
+  for (const s of steps) {
+    if (s.enabled) sum += s.time;
+  }
+  const wall = Math.round(sum * WALL_RATIO);
+  return { sum, wall, enableStep: Number(profile?.enableStep) || steps.filter((s) => s.enabled).length };
+}
 
 // ---- Logging ----
 function ts() {
@@ -151,45 +209,120 @@ els.selGen.addEventListener('change', () => {
 
 // ---- Chart / steps ----
 function updateChart() {
-  if (!decodedProfile) return;
+  if (!els.heatingChart) return;
   els.heatingChart.innerHTML = '';
-  const maxTemp = 350;
-  for (let i = 0; i <= 19; i++) {
-    const step = decodedProfile[`step${String(i).padStart(2, '0')}`];
-    if (!step) continue;
+  if (!decodedProfile) {
+    if (els.chartLegend) els.chartLegend.textContent = '';
+    if (els.chartScale) els.chartScale.textContent = '°C · 幅＝時間';
+    return;
+  }
+
+  const steps = stepList(decodedProfile).filter((s) => s.time > 0 || s.temp !== 0);
+  const { sum, wall, enableStep } = profileTimingSummary(decodedProfile);
+
+  // Y labels (absolute — must not participate in time-flex row)
+  const y = document.createElement('div');
+  y.className = 'chart-y';
+  y.setAttribute('aria-hidden', 'true');
+  y.innerHTML = `<span>${CHART_TEMP_MAX}</span><span>255</span><span>170</span><span>${CHART_TEMP_MIN}</span>`;
+  els.heatingChart.appendChild(y);
+
+  const track = document.createElement('div');
+  track.className = 'chart-track';
+  els.heatingChart.appendChild(track);
+
+  const span = Math.max(1, CHART_TEMP_MAX - CHART_TEMP_MIN);
+  for (const s of steps) {
+    const col = document.createElement('div');
+    col.className = 'chart-col';
+    // Width ∝ device seconds (uint8 time field)
+    col.style.flex = `${Math.max(s.time, 0.5)} 1 0`;
+    col.style.minWidth = s.time >= 90 ? '22px' : s.time >= 30 ? '14px' : '8px';
+
     const bar = document.createElement('div');
     bar.className = 'chart-bar';
-    bar.style.height = `${Math.min((Math.abs(step.temperature) / maxTemp) * 100, 100)}%`;
-    bar.setAttribute('data-val', `${step.temperature}°`);
-    els.heatingChart.appendChild(bar);
+    if (!s.enabled) bar.classList.add('off');
+    if (s.temp < 0) bar.classList.add('neg');
+    if (s.temp === 0 && s.enabled) bar.classList.add('term');
+
+    const absT = Math.abs(s.temp);
+    const h = Math.min(100, Math.max(0, ((absT - CHART_TEMP_MIN) / span) * 100));
+    bar.style.height = `${Math.max(h, s.temp === 0 ? 4 : 2)}%`;
+    bar.title = `S${s.i}: ${s.temp}°C · ${formatDuration(s.time)} (device ${s.time}s)${s.enabled ? '' : ' · off'}`;
+
+    if (s.time >= 40 || steps.length <= 8) {
+      const tag = document.createElement('span');
+      tag.className = 'temp-tag';
+      tag.textContent = s.temp === 0 ? '0' : String(s.temp);
+      col.appendChild(tag);
+    }
+
+    const tl = document.createElement('span');
+    tl.className = 't-label';
+    tl.textContent = formatDuration(s.time);
+
+    col.appendChild(bar);
+    col.appendChild(tl);
+    track.appendChild(col);
+  }
+
+  if (els.chartScale) {
+    els.chartScale.textContent = `0–${CHART_TEMP_MAX}°C · 棒幅∝デバイス秒`;
+  }
+  if (els.chartLegend) {
+    els.chartLegend.textContent =
+      `有効 S0–S${Math.max(0, enableStep - 1)} · Σ ${formatDuration(sum)}（${sum}s デバイス）` +
+      ` · 目安 wall ~${formatDuration(wall)}（×${WALL_RATIO}）`;
   }
 }
 
 function renderStepsEditor() {
   els.stepsContainer.innerHTML = '';
-  if (!decodedProfile) return;
+  if (!decodedProfile) {
+    els.stepsContainer.innerHTML = '<div class="empty-state">プロファイル未読込</div>';
+    if (els.stepsSummary) els.stepsSummary.textContent = '';
+    return;
+  }
 
-  for (let i = 0; i <= 19; i++) {
-    const stepKey = `step${String(i).padStart(2, '0')}`;
-    const step = decodedProfile[stepKey];
-    if (!step) continue;
+  const { sum, wall, enableStep } = profileTimingSummary(decodedProfile);
+  if (els.stepsSummary) {
+    els.stepsSummary.textContent = `st=${enableStep} · Σ${formatDuration(sum)} · wall~${formatDuration(wall)}`;
+  }
 
+  const steps = stepList(decodedProfile);
+  // Show enabled steps + trailing zeros up through last non-empty, cap visual noise
+  let lastShow = enableStep - 1;
+  for (let i = 0; i < steps.length; i++) {
+    if (steps[i].time || steps[i].temp) lastShow = Math.max(lastShow, steps[i].i);
+  }
+  lastShow = Math.min(19, Math.max(lastShow, enableStep - 1));
+
+  for (const s of steps) {
+    if (s.i > lastShow) continue;
     const row = document.createElement('div');
     row.className = 'step-row';
+    if (!s.enabled) row.classList.add('disabled-step');
+    if (s.temp === 0 && s.enabled && s.time > 0) row.classList.add('term-step');
+
+    const hum = formatDuration(s.time);
     row.innerHTML = `
-      <div class="step-label">Step ${i}</div>
+      <div class="step-label">
+        S${s.i}
+        <small>${s.enabled ? hum : 'off'}</small>
+      </div>
       <div class="step-inputs">
         <div class="input-group">
-          <label>Temp</label>
-          <input type="number" data-key="${stepKey}" data-prop="temperature" value="${step.temperature}">
+          <label>温度 °C</label>
+          <input type="number" inputmode="decimal" data-key="${s.key}" data-prop="temperature" value="${s.step.temperature}">
         </div>
         <div class="input-group">
-          <label>Time</label>
-          <input type="number" data-key="${stepKey}" data-prop="time" value="${step.time}">
+          <label>時間（デバイス秒 0–255）</label>
+          <input type="number" inputmode="numeric" min="0" max="255" data-key="${s.key}" data-prop="time" value="${s.step.time}">
+          <span class="hint">表示 ${hum} · wall目安 ${formatDuration(Math.round((Number(s.step.time) || 0) * WALL_RATIO))}</span>
         </div>
-        <div class="input-group">
-          <label>Puff</label>
-          <input type="number" step="any" data-key="${stepKey}" data-prop="puffThreshold" value="${step.puffThreshold}">
+        <div class="input-group span2">
+          <label>Puff thr（上級）</label>
+          <input type="number" step="any" data-key="${s.key}" data-prop="puffThreshold" value="${s.step.puffThreshold}">
         </div>
       </div>
     `;
@@ -197,28 +330,74 @@ function renderStepsEditor() {
   }
 
   els.stepsContainer.querySelectorAll('input').forEach((input) => {
-    input.addEventListener('change', (e) => {
+    const sync = (e) => {
       const { key, prop } = e.target.dataset;
-      const val = parseFloat(e.target.value);
-      if (!Number.isNaN(val)) {
-        decodedProfile[key][prop] = val;
-        updateChart();
+      let val = parseFloat(e.target.value);
+      if (Number.isNaN(val)) return;
+      if (prop === 'time') {
+        if (val > 255) {
+          val = 255;
+          e.target.value = '255';
+        }
+        if (val < 0) {
+          val = 0;
+          e.target.value = '0';
+        }
+        val = Math.trunc(val);
+      }
+      decodedProfile[key][prop] = val;
+      updateChart();
+      // refresh human hints without full re-render on every keystroke of temp
+      if (prop === 'time') {
+        const row = e.target.closest('.step-row');
+        const hint = row?.querySelector('.hint');
+        const lab = row?.querySelector('.step-label small');
+        if (hint) {
+          hint.textContent = `表示 ${formatDuration(val)} · wall目安 ${formatDuration(Math.round(val * WALL_RATIO))}`;
+        }
+        if (lab && !row.classList.contains('disabled-step')) lab.textContent = formatDuration(val);
+        const { sum: sm, wall: w, enableStep: st } = profileTimingSummary(decodedProfile);
+        if (els.stepsSummary) {
+          els.stepsSummary.textContent = `st=${st} · Σ${formatDuration(sm)} · wall~${formatDuration(w)}`;
+        }
+        if (els.profileMeta) updateProfileMeta();
+      }
+    };
+    input.addEventListener('change', sync);
+    input.addEventListener('input', (e) => {
+      if (e.target.dataset.prop === 'temperature') {
+        const { key, prop } = e.target.dataset;
+        const val = parseFloat(e.target.value);
+        if (!Number.isNaN(val)) {
+          decodedProfile[key][prop] = val;
+          updateChart();
+        }
       }
     });
   });
 }
 
+function updateProfileMeta() {
+  if (!els.profileMeta || !decodedProfile) return;
+  const name = currentProfileRaw?.name || 'Custom';
+  const { sum, wall, enableStep } = profileTimingSummary(decodedProfile);
+  els.profileMeta.innerHTML =
+    `<strong>${name}</strong> · st=${enableStep}` +
+    ` · デバイス Σ <strong>${formatDuration(sum)}</strong> (${sum}s)` +
+    ` · 目安 wall <strong>~${formatDuration(wall)}</strong>` +
+    ` · profileNum=${decodedProfile.profileNum ?? '—'}`;
+}
+
 function onProfileLoaded(name) {
   renderStepsEditor();
   updateChart();
+  updateProfileMeta();
   els.btnExport.disabled = false;
   els.btnDryrun.disabled = false;
   els.btnCopyDry.disabled = false;
   updateApplyEnabled();
   log(`Loaded profile: ${name}`);
-  // Switch to Profile tab so chart / steps / dry-run are visible
-  els.tabs[1].click();
-  // Auto dry-run so "preview" is not a second manual step
+  showPanel('panel-profile');
   try {
     runDryrun();
   } catch (e) {
@@ -361,13 +540,13 @@ function updateApplyEnabled() {
     !!getMasterOrNull();
   els.btnApply.disabled = !ok;
   els.btnApply.textContent = !writesEnabled()
-    ? 'Apply to Device (writes off)'
+    ? 'Apply（書き込みOFF）'
     : !writeChar
-      ? 'Apply (not connected)'
+      ? 'Apply（未接続）'
       : !decodedProfile
-        ? 'Apply (no profile)'
+        ? 'Apply（プロファイルなし）'
         : !getMasterOrNull()
-          ? 'Apply (need master 20)'
+          ? 'Apply（Master不足）'
           : 'Apply to Device';
   els.btnReset.disabled = !(writesEnabled() && writeChar);
 }
@@ -894,29 +1073,23 @@ els.btnApply.addEventListener('click', async () => {
 // Boot + build stamp (branch Pages serves build-info.js from git)
 async function loadDeployStamp() {
   const el = $('deploy-stamp');
-  const hint = $('deploy-hint');
+  if (!el) return;
   try {
-    // Prefer committed build-info.js (works on /web-app/ branch Pages)
     const mod = await import(`./build-info.js?t=${Date.now()}`);
     const b = mod.BUILD_INFO || {};
-    const label = `build ${b.short || b.id || '?'} · ${b.stampedAt || ''}`;
-    el.textContent = label;
-    if (hint) {
-      hint.textContent =
-        '反映確認: この build id が変わる = 新しい main.js が届いている。変わらなければハードリロード。';
-    }
-    log(`Build stamp: ${b.id || label}`);
+    el.textContent = `${b.short || b.id || '?'} · ${b.stampedAt || ''}`;
+    log(`Build stamp: ${b.id || el.textContent}`);
   } catch (e) {
-    el.textContent = 'build: unknown';
+    el.textContent = 'build?';
     log('Build stamp failed: ' + e);
   }
-  // Optional Actions meta (if ever deployed that way)
   try {
     const res = await fetch(`./deploy-meta.json?t=${Date.now()}`, { cache: 'no-store' });
     if (res.ok) {
       const meta = await res.json();
       if (meta.short && meta.short !== 'local') {
-        log(`Pages Actions meta: ${meta.short} @ ${meta.deployedAt}`);
+        el.textContent = `${meta.short} · ${meta.deployedAt || ''}`;
+        log(`Pages meta: ${meta.short}`);
       }
     }
   } catch {
@@ -924,7 +1097,9 @@ async function loadDeployStamp() {
   }
 }
 
-log('Ploom Studio ready. Protocol: ./protocol (static ESM, no bundler).');
-log(`Secure context: ${window.isSecureContext}  bluetooth: ${!!navigator.bluetooth}`);
+log('Ploom Studio ready · Aura verified · Profile-first UI');
+log(`Secure: ${window.isSecureContext}  BT: ${!!navigator.bluetooth}`);
+log('Time unit: device seconds (uint8 0–255). Wall ≈ ×0.86 of step sum.');
+showPanel('panel-profile');
 updateApplyEnabled();
 loadDeployStamp();
