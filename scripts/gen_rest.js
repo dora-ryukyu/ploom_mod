@@ -72,5 +72,15 @@ for (const name of fs.readdirSync(DIR)) {
   if (!/\.(js|json)$/.test(name)) continue;
   fs.copyFileSync(path.join(DIR, name), path.join(webProto, name));
 }
+// Keep presets next to index.html for GitHub Pages (no Vite public/ rewrite)
+const srcProfiles = path.join(ROOT, 'userHeatProfile');
+const dstProfiles = path.join(ROOT, 'web-app', 'profiles');
+fs.mkdirSync(dstProfiles, { recursive: true });
+if (fs.existsSync(srcProfiles)) {
+  for (const name of fs.readdirSync(srcProfiles)) {
+    if (!name.endsWith('.json')) continue;
+    fs.copyFileSync(path.join(srcProfiles, name), path.join(dstProfiles, name));
+  }
+}
 console.log('keyMap', Object.keys(K).length, 'headers', H.tI.length, H.tL.length);
-console.log('synced → web-app/protocol');
+console.log('synced → web-app/protocol + web-app/profiles');

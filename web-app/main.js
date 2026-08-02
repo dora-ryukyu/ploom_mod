@@ -214,13 +214,38 @@ function onProfileLoaded(name) {
   els.btnCopyDry.disabled = false;
   updateApplyEnabled();
   log(`Loaded profile: ${name}`);
+  // Switch to Profile tab so chart / steps / dry-run are visible
   els.tabs[1].click();
+  // Auto dry-run so "preview" is not a second manual step
+  try {
+    runDryrun();
+  } catch (e) {
+    log('Auto dry-run failed: ' + e.message);
+  }
 }
 
+/**
+ * heatProfileData may be: JSON string, already-parsed object, or empty (Strong).
+ */
 function loadDecodedFromRaw(raw, name) {
   currentProfileRaw = raw;
-  const hp = raw.heatProfileData;
-  decodedProfile = decodeKeys(typeof hp === 'string' ? hp : JSON.stringify(hp));
+  let hp = raw?.heatProfileData;
+  if (hp == null || hp === '') {
+    throw new Error(
+      `${name}: heatProfileData が空です（Strong 等は再取得が必要）`
+    );
+  }
+  if (typeof hp === 'string') {
+    hp = JSON.parse(hp);
+  }
+  if (typeof hp !== 'object' || Array.isArray(hp)) {
+    throw new Error(`${name}: heatProfileData の形が不正です`);
+  }
+  decodedProfile = decodeKeys(hp);
+  const step0 = decodedProfile.step00;
+  log(
+    `Decoded ${name}: profileNum=${decodedProfile.profileNum} step00 temp=${step0?.temperature} time=${step0?.time}`
+  );
   onProfileLoaded(name);
 }
 
@@ -233,20 +258,43 @@ els.fileUpload.addEventListener('change', (e) => {
       loadDecodedFromRaw(JSON.parse(evt.target.result), file.name);
     } catch (err) {
       log('Error loading JSON: ' + err.message);
+      alert('プロファイル読み込み失敗: ' + err.message);
     }
   };
   reader.readAsText(file);
 });
 
+/** Static Pages: files live at ./profiles/ (and legacy ./public/profiles/ for Vite). */
+async function fetchPresetJson(name) {
+  const paths = [`./profiles/${name}.json`, `./public/profiles/${name}.json`];
+  const errors = [];
+  for (const p of paths) {
+    try {
+      const res = await fetch(p + `?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) {
+        errors.push(`${p} → HTTP ${res.status}`);
+        continue;
+      }
+      const json = await res.json();
+      return { json, path: p };
+    } catch (e) {
+      errors.push(`${p} → ${e.message || e}`);
+    }
+  }
+  throw new Error(errors.join(' | ') || 'preset not found');
+}
+
 els.selPreset.addEventListener('change', async () => {
   const name = els.selPreset.value;
   if (!name) return;
+  log(`Loading preset ${name}…`);
   try {
-    const res = await fetch(`./profiles/${name}.json`);
-    if (!res.ok) throw new Error(res.statusText);
-    loadDecodedFromRaw(await res.json(), name + ' (preset)');
+    const { json, path } = await fetchPresetJson(name);
+    log(`Preset fetch OK: ${path}`);
+    loadDecodedFromRaw(json, name + ' (preset)');
   } catch (err) {
     log('Preset load failed: ' + err.message);
+    alert('Preset 読み込み失敗:\n' + err.message);
   }
 });
 
