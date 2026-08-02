@@ -1,0 +1,65 @@
+# Deploy web-app/ as GitHub Pages (static, no build step).
+# Repo Settings → Pages → Source: GitHub Actions
+name: Deploy web-app to Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web-app/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp deploy meta into web-app
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA}"
+          SHORT="${SHA:0:7}"
+          TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          cat > web-app/deploy-meta.json <<EOF
+          {
+            "sha": "${SHA}",
+            "short": "${SHORT}",
+            "deployedAt": "${TIME}",
+            "runUrl": "${RUN_URL}",
+            "ref": "${GITHUB_REF_NAME}"
+          }
+          EOF
+          # Also inject a one-line visible stamp file for cache-busting
+          echo "${SHORT} ${TIME}" > web-app/DEPLOY.txt
+          # Patch index.html cache-buster on main.js / style.css
+          sed -i "s|href=\"./style.css\"|href=\"./style.css?v=${SHORT}\"|" web-app/index.html
+          sed -i "s|src=\"./main.js\"|src=\"./main.js?v=${SHORT}\"|" web-app/index.html
+          cat web-app/deploy-meta.json
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-app
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

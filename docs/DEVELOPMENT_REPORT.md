@@ -123,10 +123,18 @@ Vite（`cd web-app && npm run dev`）は任意。HMR 用で、必須ではない
 
 ### GitHub Pages（開発中推奨）
 
-`web-app/` 配下をそのまま公開すればよい（`index.html` が入口）。  
-`dist/` ビルドや bundler は不要。
+Workflow: `.github/workflows/pages.yml` が **`web-app/` をそのまま** Pages にデプロイ（bundler なし）。
 
-必要: **HTTPS**（Pages は標準で満たす）、Android **Chrome**、端末の BT オン。
+**初回だけ** リポジトリ Settings → **Pages** → Build and deployment → Source を **GitHub Actions** にする。
+
+反映確認:
+
+1. Actions タブで `Deploy web-app to Pages` が緑
+2. アプリ画面ヘッダの **`deploy <short-sha> · <UTC time>`**（`deploy-meta.json`）
+3. ログ先頭の `Deploy stamp: …`
+4. 古いキャッシュが残る場合は URL に `?` を付けるか、Chrome でハードリロード
+
+必要: **HTTPS**、Android **Chrome**、端末の BT オン。
 
 ルートの `protocol/` を直したあとは:
 
@@ -152,14 +160,29 @@ node scripts/sync_protocol_webapp.js
 
 ---
 
-## 8. 未解決・実機待ち
+## 8. 実機キャプチャ（Aura / Android）— Phase A 成功
 
-1. **この個体の master 20・0x47 生値・FW 文字列**
-2. Android での indicate / startNotifications 成否
-3. 書き込み時 0x43 の確実な受信
-4. **Strong.json は `heatProfileData: ""` で中身が空**（再取得が必要。Eco/Long のみプリセット有効）
-5. 公式 post-write（i5/i6/i7 相当）の要否
-6. プロファイル読み戻しによるビット一致検証（公式も弱い）
+2026-08 ログ（要約）:
+
+| 項目 | 値 |
+|------|-----|
+| TX char | write=true, **writeWithoutResponse=false** |
+| RX char | **indicate=true** only（notify=false）→ `startNotifications` で OK |
+| 0x47 variation | **33** (`05 47 21 00 00 00`) |
+| Battery health 0x33 | **100%** (`02 33 64`) |
+| Lock 0x9f | unlocked |
+| 追加 RX | 0x3c（例: 0x57）、0x35（例: 01 00 00 00）— 未完全解読 |
+| Master 20 | `[1, 1537, 1509, 1503, 2423, 2419, 1912, 1227, 1220, 1119, 1454, 1059, 3203, 3192, 1585, 1022, 521, 595, 595, 3512]` |
+
+既知ノイズ（修正済想定）: Init 後 0x30 が複数回来て variation/master 要求が二重化し、`GATT operation already in progress` が出ることがあった → **write キュー + one-shot 連鎖**。
+
+### まだ未解決
+
+1. Device Info の FW 文字列（`G4` 明示）— 無くても Aura は Gen4 既定でよい
+2. 書き込み時 0x43 の実機確認
+3. **Strong.json は `heatProfileData: ""` で空**（Eco/Long のみ有効）
+4. 公式 post-write（i5/i6/i7）の要否
+5. 0x3c / 0x35 の正式意味
 
 ---
 

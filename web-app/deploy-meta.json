@@ -1,0 +1,8 @@
+{
+  "sha": "local",
+  "short": "local",
+  "deployedAt": null,
+  "runUrl": null,
+  "ref": "local",
+  "note": "Replaced by GitHub Actions on each Pages deploy"
+}

@@ -64,6 +64,13 @@ let deviceGen = 4;
 let deviceState = { autoStart: false };
 /** @type {Map<string, {resolve: Function, reject: Function, timer: any}>} */
 const pendingByOpcode = new Map();
+/** Serialize GATT writes — Android throws if two writeValueWithResponse overlap */
+let writeChain = Promise.resolve();
+/** One-shot init pipeline (device often emits 0x30 twice) */
+let initFlags = {
+  requestedVariation: false,
+  requestedMaster: false,
+};
 
 // ---- Tabs ----
 els.tabs.forEach((tab) => {
@@ -358,37 +365,57 @@ function notifyWaiters(data) {
 }
 
 /**
+ * Queue GATT writes so only one is in flight (fixes "GATT operation already in progress").
  * @returns {Promise<'ok'|'ok-no-response'|null>} null = hard failure
  */
-async function sendCommand(cmdArray, { settleMs } = {}) {
-  if (!writeChar) throw new Error('Not connected');
-  const cmd = cmdArray instanceof Uint8Array ? cmdArray : new Uint8Array(cmdArray);
-  logTx(cmd);
+function sendCommand(cmdArray, { settleMs } = {}) {
+  const run = async () => {
+    if (!writeChar) throw new Error('Not connected');
+    const cmd = cmdArray instanceof Uint8Array ? cmdArray : new Uint8Array(cmdArray);
+    logTx(cmd);
 
-  const canWithResponse = !!writeChar.properties.write;
-  const canWithout = !!writeChar.properties.writeWithoutResponse;
+    const canWithResponse = !!writeChar.properties.write;
+    const canWithout = !!writeChar.properties.writeWithoutResponse;
 
-  try {
-    if (canWithResponse && typeof writeChar.writeValueWithResponse === 'function') {
-      await writeChar.writeValueWithResponse(cmd);
-      // Official syncResponse true path: tiny settle
-      await sleep(settleMs ?? 10);
-      return 'ok';
-    }
-    if (canWithout && typeof writeChar.writeValueWithoutResponse === 'function') {
-      await writeChar.writeValueWithoutResponse(cmd);
-      // Official: syncResponse false → +100ms
+    try {
+      if (canWithResponse && typeof writeChar.writeValueWithResponse === 'function') {
+        await writeChar.writeValueWithResponse(cmd);
+        await sleep(settleMs ?? 20);
+        return 'ok';
+      }
+      if (canWithout && typeof writeChar.writeValueWithoutResponse === 'function') {
+        await writeChar.writeValueWithoutResponse(cmd);
+        await sleep(settleMs ?? WRITE_TIMING.onSyncFalseExtraDelayMs);
+        return 'ok-no-response';
+      }
+      await writeChar.writeValue(cmd);
       await sleep(settleMs ?? WRITE_TIMING.onSyncFalseExtraDelayMs);
-      return 'ok-no-response';
+      return 'ok';
+    } catch (e) {
+      log('write failed: ' + e);
+      return null;
     }
-    // Legacy writeValue
-    await writeChar.writeValue(cmd);
-    await sleep(settleMs ?? WRITE_TIMING.onSyncFalseExtraDelayMs);
-    return 'ok';
-  } catch (e) {
-    log('write failed: ' + e);
-    return null;
-  }
+  };
+
+  const p = writeChain.then(run, run);
+  // Keep queue alive even if one write fails
+  writeChain = p.then(
+    () => undefined,
+    () => undefined
+  );
+  return p;
+}
+
+function requestVariationOnce() {
+  if (initFlags.requestedVariation) return;
+  initFlags.requestedVariation = true;
+  sendCommand(REQUESTS.getDeviceVariation).catch((e) => log(String(e)));
+}
+
+function requestMasterOnce() {
+  if (initFlags.requestedMaster) return;
+  initFlags.requestedMaster = true;
+  sendCommand(REQUESTS.getMasterNumber).catch((e) => log(String(e)));
 }
 
 function renderMaster() {
@@ -420,24 +447,30 @@ function handleNotify(event) {
     case 0x18:
       break;
     case 0x30:
-      // Chain: version
-      setTimeout(() => {
-        sendCommand(REQUESTS.getDeviceVariation).catch((e) => log(String(e)));
-      }, 150);
+      // Device may emit 0x30 more than once; only one variation request
+      requestVariationOnce();
       break;
     case 0x33:
       els.valHealth.textContent = `${data[2]}%`;
       break;
+    case 0x35:
+      // Seen on Aura after init (status nibble); keep raw in log only
+      break;
+    case 0x3c: {
+      // Likely battery level / related (payload e.g. 0x57 = 87)
+      if (data.length >= 3) {
+        log(`op 0x3c payload[2]=${data[2]} (often battery-ish)`);
+      }
+      break;
+    }
     case 0x47: {
-      // Official: uint16 LE at offset 2
+      // Official: uint16 LE at offset 2 — Aura log: 21 00 → 33
       const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
       const variation = data.length >= 4 ? view.getUint16(2, true) : data[2];
       els.valVersion.textContent = String(variation);
       log(`Device variation raw=${variation}`);
-      // Heuristic: high gens often report larger codes — keep manual Gen select authoritative
-      setTimeout(() => {
-        sendCommand(REQUESTS.getMasterNumber).catch((e) => log(String(e)));
-      }, 150);
+      // Aura A00800GL: keep Gen4 default unless user overrides
+      requestMasterOnce();
       break;
     }
     case 0x44: {
@@ -570,6 +603,8 @@ els.btnConnect.addEventListener('click', async () => {
 
     masterSlots = new Array(20);
     masterProfile = null;
+    initFlags = { requestedVariation: false, requestedMaster: false };
+    writeChain = Promise.resolve();
     els.valMaster.textContent = '0/20';
     els.masterGrid.innerHTML = '<div class="empty-state">Loading…</div>';
 
@@ -685,7 +720,35 @@ els.btnApply.addEventListener('click', async () => {
   }
 });
 
-// Boot
+// Boot + deploy stamp (GitHub Pages injects deploy-meta.json on each deploy)
+async function loadDeployStamp() {
+  const el = $('deploy-stamp');
+  const hint = $('deploy-hint');
+  try {
+    const res = await fetch(`./deploy-meta.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(String(res.status));
+    const meta = await res.json();
+    const label = `deploy ${meta.short || '?'} · ${meta.deployedAt || ''}`;
+    if (meta.runUrl) {
+      el.innerHTML = `<a href="${meta.runUrl}" target="_blank" rel="noopener">${label}</a>`;
+    } else {
+      el.textContent = label;
+    }
+    if (hint) {
+      hint.textContent = `Pages 反映確認: この表示の commit が GitHub の最新と一致すれば更新済み。`;
+    }
+    log(`Deploy stamp: ${meta.short} @ ${meta.deployedAt}`);
+  } catch {
+    el.textContent = 'deploy: local / not stamped';
+    if (hint) {
+      hint.textContent =
+        'deploy-meta.json が無い = まだ Pages Actions 未デプロイ、またはローカル配信。';
+    }
+    log('Deploy stamp: (no deploy-meta.json — local or pre-Actions host)');
+  }
+}
+
 log('Ploom Studio ready. Protocol: ./protocol (static ESM, no bundler).');
 log(`Secure context: ${window.isSecureContext}  bluetooth: ${!!navigator.bluetooth}`);
 updateApplyEnabled();
+loadDeployStamp();
