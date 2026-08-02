@@ -11,6 +11,21 @@ function step(profile, n) {
   return profile['step' + String(n).padStart(2, '0')];
 }
 
+/**
+ * Step duration on the wire is a single uint8 (official: Number(i.time) into one byte).
+ * Values >255 silently wrap in Uint8Array (e.g. 300 → 44) and produce ~4 min sessions.
+ */
+function stepTimeU8(time, label = 'step') {
+  const n = Number(time) || 0;
+  if (n < 0 || n > 255 || !Number.isFinite(n)) {
+    throw new Error(
+      `${label} time=${time} is out of uint8 range (0–255). ` +
+        `BLE packs duration as one byte; 300 becomes 44 on the wire.`
+    );
+  }
+  return n | 0;
+}
+
 export function buildProfileGen3(profile, masterProfile, profileSlot) {
   const out = [];
   const slot = profileSlot != null ? profileSlot : Number(profile.profileNum);
@@ -26,7 +41,7 @@ export function buildProfileGen3(profile, masterProfile, profileSlot) {
           ...hdr,
           slot || Number(profile.profileNum),
           ...heatU16(heat),
-          Number(a.time),
+          stepTimeU8(a.time, `step${String(s).padStart(2, '0')}`),
           0,
           0,
           ...puffBytes(a.puffThreshold),
@@ -36,7 +51,7 @@ export function buildProfileGen3(profile, masterProfile, profileSlot) {
         M = [
           ...hdr,
           ...heatU16(heat),
-          Number(a.time),
+          stepTimeU8(a.time, `step${String(s).padStart(2, '0')}`),
           0,
           0,
           ...puffBytes(a.puffThreshold),
@@ -107,7 +122,7 @@ export function buildProfileGen4(profile, masterProfile) {
         ...hdr,
         ...(n === 0 ? [Number(i.eeprom != null ? i.eeprom : 1)] : []),
         ...heatU16(heat),
-        Number(i.time),
+        stepTimeU8(i.time, `step${String(n).padStart(2, '0')}`),
         ...u16le(rawTemp | 0),
         ...puffBytes(i.puffThreshold),
         Number(i.vibeStart),
