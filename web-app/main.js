@@ -75,6 +75,8 @@ let initFlags = {
   gotVariation: false,
   gotMasterDone: false,
 };
+/** Set when RX 0x43 arrives (may be during profile write loop, before we await it) */
+let sawProfileWriteDone = false;
 
 // ---- Tabs ----
 els.tabs.forEach((tab) => {
@@ -625,7 +627,8 @@ function handleNotify(event) {
       break;
     }
     case 0x43:
-      log('Profile write done (0x43)');
+      sawProfileWriteDone = true;
+      log('Profile write done (0x43) — device accepted heating profile batch');
       break;
     default:
       break;
@@ -836,6 +839,11 @@ els.btnApply.addEventListener('click', async () => {
   els.btnApply.disabled = true;
   try {
     log(`Apply start: ${cmds.length} cmds gen=${gen}`);
+    // Arm 0x43 waiter BEFORE writes — device often sends 0x43 during/right after
+    // the last cmds, before we would start waiting (false timeout).
+    sawProfileWriteDone = false;
+    const donePromise = waitOpcode('43', WRITE_TIMING.profileDoneTimeoutMs + 15000);
+
     for (let i = 0; i < cmds.length; i++) {
       log(`--- cmd ${i + 1}/${cmds.length} ---`);
       const status = await sendCommand(cmds[i]);
@@ -844,15 +852,36 @@ els.btnApply.addEventListener('click', async () => {
         alert(`書き込み失敗: cmd ${i}`);
         return;
       }
+      if (sawProfileWriteDone) {
+        log(`0x43 already seen at/after cmd ${i + 1}/${cmds.length}`);
+      }
     }
-    log('Waiting 0x43 profile-done…');
-    const done = await waitOpcode('43', WRITE_TIMING.profileDoneTimeoutMs);
-    if (!done) {
-      log('0x43 wait timed out — check logs if 0x43 appeared during writes.');
-      alert('コマンド送信は完了。0x43 完了通知が確認できませんでした。ログを確認してください。');
+
+    log('Waiting 0x43 profile-done (or already received)…');
+    let done = null;
+    if (sawProfileWriteDone) {
+      done = true;
+      // Clear pending waiter if any
+      const pending = pendingByOpcode.get('43');
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingByOpcode.delete('43');
+        pending.resolve(true);
+      }
     } else {
-      log('Apply SUCCESS (0x43 received).');
-      alert('焼き込み完了 (0x43)。');
+      done = await donePromise;
+    }
+
+    if (done || sawProfileWriteDone) {
+      log('Apply SUCCESS (0x43). Profile batch accepted by device.');
+      alert(
+        '焼き込み完了 (0x43 受信)。\n本体でプロファイルを切り替えて加熱できるか確認してください。'
+      );
+    } else {
+      log('0x43 wait timed out and flag clear — uncertain.');
+      alert(
+        'コマンド送信は完了しましたが 0x43 を確認できませんでした。\nログに RX 02 43 が無いか確認してください。'
+      );
     }
   } catch (err) {
     log('Apply failed: ' + err);
