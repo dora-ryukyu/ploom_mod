@@ -225,7 +225,7 @@ Notify UUID から受け取るバイト列の先頭のHexコード（オペコ�
   "remainingBatteryLevel": null,         // バッテリー残量
   "chargeLogCount": 0,                   // 充電回数ログ
   "smokingLogCount": 0,                  // 吸煙回数ログ
-  "profileNumber": null,
+  "profileNumber": null,             // 内部状態 0=標準寄り / 1–2=カスタム焼付後など。本体にモード選択UIは無い
   "masterCorrection": [...],             // 20要素
   "version": "3.0" | "3.05" | "3.1" | "4.0" | "4.1", // ファームウェア由来デバイスバージョン
   "isLockingFunctionSetting": null,

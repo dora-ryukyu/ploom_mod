@@ -176,13 +176,34 @@ node scripts/sync_protocol_webapp.js
 
 既知ノイズ（修正済想定）: Init 後 0x30 が複数回来て variation/master 要求が二重化し、`GATT operation already in progress` が出ることがあった → **write キュー + one-shot 連鎖**。
 
+### デバイス上のプロファイル（重要・訂正）
+
+**本体に「複数プロファイルから選ぶ」UIは無い**（ユーザー確認）。
+
+| 状態 | 実機の意味 |
+|------|------------|
+| Apply 成功（0x43） | **今の加熱レシピがその1本に置き換わる** |
+| Reset Basic `[2,166,0]` | **標準（工場/デフォルト）に戻る** |
+| アプリ JSON の Eco/Long/SuperLong | **PC/Web 側の素材**。本体メニュー項目ではない |
+
+公式 JS の `profileNumber` 0/1/2 は **アプリ↔デバイス内部フラグ**（カスタム有無・ログ用）であり、「本体で Standard / Custom を切り替える画面」ではない、と解釈する。  
+以前の「Apply 後に本体でスロットを選べ」は **誤り**。
+
+### 実測セッション長（2026-08 SuperLong Apply 後）
+
+- ステップ秒合計の設計: **480s ≒ 8.0 min**
+- 加熱開始からの実測: **おおよそ 5:30（330s）**
+- `puffFinishCountEnabled=0` のため **パフ回数上限は主因にしにくい**
+- 5:30 は SuperLong の step05 帯に載る。step06–08 の「伸ばし」まで到達していないか、**ステップ合計≠ウォールタイム**の可能性
+
 ### まだ未解決
 
-1. Device Info の FW 文字列（`G4` 明示）— 無くても Aura は Gen4 既定でよい
-2. 書き込み時 0x43 の実機確認
-3. **Strong.json は `heatProfileData: ""` で空**（Eco/Long のみ有効）
-4. 公式 post-write（i5/i6/i7）の要否
+1. **公式 Long の実測ウォールタイム**（測り方揃えて比較）— 次の最優先
+2. Device Info の FW 文字列（任意）
+3. 公式 post-write（`i5`/`i6` stick-detect 等）を Apply 後にやらない影響
+4. **Strong.json は空**（使えない）
 5. 0x3c / 0x35 の正式意味
+6. lastThreshold / 保護による早期終了の有無
 
 ---
 
@@ -190,11 +211,12 @@ node scripts/sync_protocol_webapp.js
 
 | Phase | 内容 | 完了条件 |
 |-------|------|----------|
-| **A** | Android 読み取り | Init/Version/Master + ログ Copy |
-| **B** | Dry-run 突き合わせ | live master で Eco 等の hex を保存 |
-| **C** | 短い write 試験 | Vibe / Reset の挙動確認 |
-| **D** | Profile apply | 全 cmd + 0x43、体感 or スロット確認 |
-| **E** | 自宅鯖 + Tailscale | Pages から移行 |
+| **A** | Android 読み取り | Init/Version/Master + ログ Copy — **完了** |
+| **B** | Dry-run | live master で 32 cmds — **完了** |
+| **C** | 短い write | Vibe — 実施可 |
+| **D** | Profile apply | 0x43 + **実吸い時間**（スロット選択は不要）— **進行中** |
+| **D2** | 公式 Long 実測 | 同じ測り方で分秒を記録 |
+| **E** | 自宅鯖 + Tailscale | Pages から移行（任意） |
 
 ---
 
